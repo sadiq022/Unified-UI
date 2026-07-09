@@ -8,13 +8,7 @@ export default function MessageBubble({ message }) {
     : '';
 
   return (
-    <div className="message-bubble">
-      <div className="message-header">
-        <span className={`role-label ${message.role}`}>
-          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>{isUser ? 'person' : 'smart_toy'}</span>
-        </span>
-        <span className="message-time">{time}</span>
-      </div>
+    <div className={`message-bubble ${message.role}`}>
 
       <div className={`message-content ${message.role}`}>
         {isUser ? (

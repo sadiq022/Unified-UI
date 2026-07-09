@@ -67,6 +67,32 @@ export default function App() {
     try {
       const data = await getHistory(convId);
       setMessages(data);
+      
+      // Auto-restore panels based on history
+      if (data && data.length > 0) {
+        const uniquePanels = [];
+        const seen = new Set();
+        for (let i = data.length - 1; i >= 0; i--) {
+          const msg = data[i];
+          if (msg.role === 'assistant' && msg.provider && msg.model) {
+            const key = `${msg.provider}:${msg.model}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              uniquePanels.push({ provider: msg.provider, model: msg.model });
+            }
+          }
+          if (uniquePanels.length === 4) break;
+        }
+        
+        if (uniquePanels.length > 0) {
+          const newPanels = uniquePanels.reverse();
+          
+          // Ensure we have at least panelCount number of panels if user had fewer than currently open,
+          // actually it's better to just set the panelCount to match the history.
+          setPanels(newPanels);
+          setPanelCount(newPanels.length);
+        }
+      }
     } catch (err) {
       console.error('Failed to load history:', err);
     }
