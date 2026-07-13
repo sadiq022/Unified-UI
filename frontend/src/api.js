@@ -21,6 +21,10 @@ export const deleteApiKey = (provider) =>
 export const getModels = (provider) =>
   request(`/api/keys/models/${provider}`);
 
+// ── Custom Models ──────────────────────────────────────────
+export const addCustomModel = (provider, model) =>
+  request('/api/custom-models', { method: 'POST', body: JSON.stringify({ provider, model }) });
+
 // ── Conversations ──────────────────────────────────────────
 export const getConversations = () => request('/api/conversations');
 export const createConversation = (title = 'New Chat') =>

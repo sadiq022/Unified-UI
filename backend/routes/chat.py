@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 import traceback
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,47 @@ from backend.schemas import ChatRequest, ChatResponse, ChatResponseItem, Message
 from backend.providers import get_provider
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
+
+_TURN_PREFIX_RE = re.compile(r"^\s*\[Turn \d+\]\s*", re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_UNCLOSED_THINK_RE = re.compile(r"<think>.*", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_turn_prefix(content: str) -> str:
+    """Strip a leaked '[Turn N] ' marker some models echo back from the prompt."""
+    return _TURN_PREFIX_RE.sub("", content, count=1)
+
+
+def _strip_think_blocks(content: str) -> str:
+    """Remove <think>...</think> reasoning traces some models inline into their content."""
+    stripped = _THINK_BLOCK_RE.sub("", content)
+    stripped = _UNCLOSED_THINK_RE.sub("", stripped)  # handle a truncated, never-closed tag
+    return stripped.strip()
+
+
+def _build_context_for_target(all_messages: list[Message], provider: str, model: str) -> list[dict]:
+    """
+    Build conversation context for one specific model: every user turn, plus only
+    this model's own past assistant answers. Other panels' answers are never
+    included — a model must never be shown a reply attributed to "assistant"
+    that it didn't actually generate, since that fabricates a false memory and
+    can bias its style/reasoning off another model's answer.
+    """
+    context_messages = []
+    for msg in all_messages:
+        if msg.role == "user":
+            context_messages.append({
+                "role": "user",
+                "content": msg.content,
+                "turn_number": msg.turn_number,
+            })
+        elif msg.role == "assistant" and msg.provider == provider and msg.model == model:
+            context_messages.append({
+                "role": "assistant",
+                "content": msg.content,
+                "turn_number": msg.turn_number,
+            })
+    return context_messages
 
 
 async def _call_model(provider_name: str, model: str, api_key: str, messages: list[dict]) -> ChatResponseItem:
@@ -23,7 +65,7 @@ async def _call_model(provider_name: str, model: str, api_key: str, messages: li
         return ChatResponseItem(
             provider=provider_name,
             model=model,
-            content=result["content"],
+            content=_strip_think_blocks(_strip_turn_prefix(result["content"])),
             response_time_ms=round(elapsed_ms, 1),
             token_count=result.get("token_count"),
         )
@@ -36,6 +78,10 @@ async def _call_model(provider_name: str, model: str, api_key: str, messages: li
                 error_detail = e.response.text
             except Exception:
                 pass
+        # Some exceptions (e.g. httpx.ReadTimeout) stringify to "" — never let an
+        # empty error message get treated as falsy/no-error downstream.
+        if not error_detail:
+            error_detail = f"{type(e).__name__} after {elapsed_ms / 1000:.1f}s"
         return ChatResponseItem(
             provider=provider_name,
             model=model,
@@ -87,25 +133,6 @@ async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     )
     all_messages = history_result.scalars().all()
 
-    # Build messages list (use only user messages and the first assistant response per turn for context)
-    seen_turns = {}
-    context_messages = []
-    for msg in all_messages:
-        if msg.role == "user":
-            context_messages.append({
-                "role": "user",
-                "content": msg.content,
-                "turn_number": msg.turn_number,
-            })
-        elif msg.role == "assistant" and msg.turn_number not in seen_turns:
-            # Include only one assistant response per turn to avoid confusion
-            seen_turns[msg.turn_number] = True
-            context_messages.append({
-                "role": "assistant",
-                "content": msg.content,
-                "turn_number": msg.turn_number,
-            })
-
     # Look up API keys for each target
     api_keys = {}
     for target in req.targets:
@@ -121,9 +148,14 @@ async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 )
             api_keys[target.provider] = key_obj.api_key
 
-    # Call all models concurrently
+    # Call all models concurrently, each with its own context (its own past answers only)
     tasks = [
-        _call_model(target.provider, target.model, api_keys[target.provider], context_messages)
+        _call_model(
+            target.provider,
+            target.model,
+            api_keys[target.provider],
+            _build_context_for_target(all_messages, target.provider, target.model),
+        )
         for target in req.targets
     ]
     responses = await asyncio.gather(*tasks)

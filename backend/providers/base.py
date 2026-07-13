@@ -24,16 +24,19 @@ class BaseProvider(ABC):
 
     def format_messages_with_turns(self, messages: list[dict]) -> list[dict]:
         """
-        Add turn markers to messages for context clarity.
+        Add turn markers to user messages for context clarity.
         Messages should already have 'turn_number' in their metadata.
+
+        Only user messages are prefixed. Prefixing assistant messages too would show
+        the model its own past replies labeled "[Turn N] ...", and models tend to
+        imitate that pattern and prepend the marker to their new reply.
         """
         formatted = []
         for msg in messages:
             turn = msg.get("turn_number")
             content = msg["content"]
-            if turn is not None:
-                prefix = f"[Turn {turn}] "
-                content = prefix + content
+            if turn is not None and msg["role"] == "user":
+                content = f"[Turn {turn}] {content}"
             formatted.append({
                 "role": msg["role"],
                 "content": content,

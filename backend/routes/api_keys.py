@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from backend.database import get_db
-from backend.models import APIKey
+from backend.models import APIKey, CustomModel
 from backend.schemas import APIKeyCreate, APIKeyResponse
 from backend.providers import get_models
 
@@ -72,9 +72,15 @@ async def delete_api_key(provider: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/models/{provider}")
-async def list_models(provider: str):
-    """Get available models for a provider."""
+async def list_models(provider: str, db: AsyncSession = Depends(get_db)):
+    """Get available models for a provider (built-in defaults plus saved custom models)."""
     models = get_models(provider)
     if not models:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
-    return {"provider": provider, "models": models}
+
+    custom_result = await db.execute(
+        select(CustomModel.model).where(CustomModel.provider == provider).order_by(CustomModel.created_at)
+    )
+    custom_models = [m for m in custom_result.scalars().all() if m not in models]
+
+    return {"provider": provider, "models": models + custom_models}

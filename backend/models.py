@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -41,3 +41,13 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class CustomModel(Base):
+    __tablename__ = "custom_models"
+    __table_args__ = (UniqueConstraint("provider", "model", name="uq_custom_model_provider_model"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(50), nullable=False, index=True)
+    model = Column(String(200), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

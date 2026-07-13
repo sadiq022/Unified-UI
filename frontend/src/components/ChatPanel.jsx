@@ -2,18 +2,33 @@ import React, { useRef, useEffect } from 'react';
 import ModelSelector from './ModelSelector.jsx';
 import MessageBubble from './MessageBubble.jsx';
 
-export default function ChatPanel({ panelIndex, provider, model, messages, isLoading, error, onProviderChange, onModelChange, configuredProviders }) {
+export default function ChatPanel({
+  panelIndex,
+  provider,
+  model,
+  seenModels,
+  messages,
+  isLoading,
+  error,
+  modelsByProvider,
+  onSelect,
+  onAddCustomModel,
+  onClose,
+  canClose,
+  configuredProviders,
+}) {
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  // Filter messages to show user messages and only this panel's assistant messages
+  // Show user messages, and assistant replies from any model this panel has ever used
+  // (not just the currently selected one) so switching models doesn't hide prior answers.
   const filteredMessages = messages.filter((msg) => {
     if (msg.role === 'user') return true;
     if (msg.role === 'assistant') {
-      return msg.provider === provider && msg.model === model;
+      return seenModels.some((pm) => pm.provider === msg.provider && pm.model === msg.model);
     }
     return false;
   });
@@ -24,8 +39,11 @@ export default function ChatPanel({ panelIndex, provider, model, messages, isLoa
         panelIndex={panelIndex}
         provider={provider}
         model={model}
-        onProviderChange={onProviderChange}
-        onModelChange={onModelChange}
+        modelsByProvider={modelsByProvider}
+        onSelect={onSelect}
+        onAddCustomModel={onAddCustomModel}
+        onClose={onClose}
+        canClose={canClose}
         configuredProviders={configuredProviders}
       />
 

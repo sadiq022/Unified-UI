@@ -5,6 +5,7 @@ from backend.providers.gemini_provider import GeminiProvider
 from backend.providers.groq_provider import GroqProvider
 from backend.providers.deepseek_provider import DeepSeekProvider
 from backend.providers.openrouter_provider import OpenRouterProvider
+from backend.providers.nvidia_provider import NvidiaProvider
 
 PROVIDERS: dict[str, BaseProvider] = {
     "openai": OpenAIProvider(),
@@ -13,6 +14,7 @@ PROVIDERS: dict[str, BaseProvider] = {
     "groq": GroqProvider(),
     "deepseek": DeepSeekProvider(),
     "openrouter": OpenRouterProvider(),
+    "nvidia": NvidiaProvider(),
 }
 
 # Hardcoded model lists per provider (used as defaults; OpenRouter fetches dynamically)
@@ -34,13 +36,19 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "claude-3-opus-20240229",
     ],
     "gemini": [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
     ],
     "groq": [
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
         "gemma2-9b-it",
+        "qwen/qwen3-32b",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-20b",
     ],
     "deepseek": [
         "deepseek-chat",
@@ -52,6 +60,15 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "google/gemini-2.5-pro-preview-05-06",
         "meta-llama/llama-3.3-70b-instruct",
         "mistralai/mistral-large-latest",
+    ],
+    "nvidia": [
+        "deepseek-ai/deepseek-v4-pro",
+        "deepseek-ai/deepseek-v4-flash",
+        "mistralai/mistral-large-3-675b-instruct-2512",
+        "mistralai/mistral-small-4-119b-2603",
+        "z-ai/glm-5.2",
+        "qwen/qwen3.5-397b-a17b",
+        "nvidia/nemotron-3-super-120b-a12b",
     ],
 }
 

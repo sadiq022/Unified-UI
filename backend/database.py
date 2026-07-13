@@ -17,7 +17,7 @@ class Base(DeclarativeBase):
 async def init_db():
     """Create all tables if they don't exist."""
     async with engine.begin() as conn:
-        from backend.models import APIKey, Conversation, Message  # noqa: F401
+        from backend.models import APIKey, Conversation, Message, CustomModel  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
 

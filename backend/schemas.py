@@ -20,6 +20,23 @@ class APIKeyResponse(BaseModel):
         from_attributes = True
 
 
+# ── Custom Models ─────────────────────────────────────────────────────────────
+
+class CustomModelCreate(BaseModel):
+    provider: str
+    model: str
+
+
+class CustomModelResponse(BaseModel):
+    id: int
+    provider: str
+    model: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ── Conversations ─────────────────────────────────────────────────────────────
 
 class ConversationCreate(BaseModel):

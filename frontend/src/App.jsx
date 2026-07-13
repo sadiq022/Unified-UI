@@ -2,19 +2,30 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ApiKeyManager from './components/ApiKeyManager.jsx';
+import { PROVIDERS } from './constants.js';
 import {
   getConversations,
   createConversation,
   deleteConversation,
   getHistory,
   getApiKeys,
+  getModels,
+  addCustomModel,
   sendMessage,
 } from './api.js';
 
+const MAX_PANELS = 4;
 const DEFAULT_PANELS = [
-  { provider: '', model: '' },
-  { provider: '', model: '' },
+  { provider: '', model: '', seenModels: [] },
+  { provider: '', model: '', seenModels: [] },
 ];
+
+function withSeenModel(seenModels, provider, model) {
+  if (seenModels.some((pm) => pm.provider === provider && pm.model === model)) {
+    return seenModels;
+  }
+  return [...seenModels, { provider, model }];
+}
 
 export default function App() {
   // ── State ──────────────────────────────────────────────────
@@ -22,11 +33,12 @@ export default function App() {
   const [activeConvId, setActiveConvId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [panels, setPanels] = useState(DEFAULT_PANELS);
-  const [panelCount, setPanelCount] = useState(2);
+  const [closedPanels, setClosedPanels] = useState([]); // stash of {provider, model}, most-recently-closed last
   const [isLoading, setIsLoading] = useState(false);
   const [panelErrors, setPanelErrors] = useState({});
   const [showSettings, setShowSettings] = useState(false);
   const [configuredProviders, setConfiguredProviders] = useState([]);
+  const [modelsByProvider, setModelsByProvider] = useState({});
   const [inputValue, setInputValue] = useState('');
   const textareaRef = useRef(null);
 
@@ -34,6 +46,7 @@ export default function App() {
   useEffect(() => {
     loadConversations();
     loadConfiguredProviders();
+    loadAllModels();
   }, []);
 
   // ── Load messages when conversation changes ────────────────
@@ -63,6 +76,29 @@ export default function App() {
     }
   };
 
+  const loadAllModels = async () => {
+    try {
+      const entries = await Promise.all(
+        PROVIDERS.map(async (p) => {
+          const data = await getModels(p.id).catch(() => ({ models: [] }));
+          return [p.id, data.models || []];
+        })
+      );
+      setModelsByProvider(Object.fromEntries(entries));
+    } catch (err) {
+      console.error('Failed to load models:', err);
+    }
+  };
+
+  const handleAddCustomModel = async (provider, model) => {
+    await addCustomModel(provider, model);
+    setModelsByProvider((prev) => {
+      const existing = prev[provider] || [];
+      if (existing.includes(model)) return prev;
+      return { ...prev, [provider]: [...existing, model] };
+    });
+  };
+
   const loadHistory = async (convId) => {
     try {
       const data = await getHistory(convId);
@@ -78,19 +114,19 @@ export default function App() {
             const key = `${msg.provider}:${msg.model}`;
             if (!seen.has(key)) {
               seen.add(key);
-              uniquePanels.push({ provider: msg.provider, model: msg.model });
+              uniquePanels.push({
+                provider: msg.provider,
+                model: msg.model,
+                seenModels: [{ provider: msg.provider, model: msg.model }],
+              });
             }
           }
           if (uniquePanels.length === 4) break;
         }
-        
+
         if (uniquePanels.length > 0) {
-          const newPanels = uniquePanels.reverse();
-          
-          // Ensure we have at least panelCount number of panels if user had fewer than currently open,
-          // actually it's better to just set the panelCount to match the history.
-          setPanels(newPanels);
-          setPanelCount(newPanels.length);
+          setPanels(uniquePanels.reverse());
+          setClosedPanels([]);
         }
       }
     } catch (err) {
@@ -106,6 +142,7 @@ export default function App() {
       setActiveConvId(conv.id);
       setMessages([]);
       setPanelErrors({});
+      setClosedPanels([]);
     } catch (err) {
       console.error('Failed to create conversation:', err);
     }
@@ -125,29 +162,31 @@ export default function App() {
   };
 
   // ── Panel management ───────────────────────────────────────
-  const handlePanelCountChange = (count) => {
-    setPanelCount(count);
-    setPanels((prev) => {
-      const updated = [...prev];
-      while (updated.length < count) {
-        updated.push({ provider: '', model: '' });
-      }
-      return updated.slice(0, count);
-    });
+  // "+ Add panel" restores the most recently closed panel (with its provider/model) first;
+  // only creates a blank panel once the closed-panel stash is empty.
+  const handleAddPanel = () => {
+    if (panels.length >= MAX_PANELS) return;
+    if (closedPanels.length > 0) {
+      const restored = closedPanels[closedPanels.length - 1];
+      setClosedPanels((prev) => prev.slice(0, -1));
+      setPanels((prev) => [...prev, restored]);
+    } else {
+      setPanels((prev) => [...prev, { provider: '', model: '', seenModels: [] }]);
+    }
   };
 
-  const handleProviderChange = (index, provider) => {
-    setPanels((prev) => {
-      const updated = [...prev];
-      updated[index] = { provider, model: '' };
-      return updated;
-    });
+  const handleClosePanel = (index) => {
+    if (panels.length <= 1) return;
+    const panelToClose = panels[index];
+    setClosedPanels((prev) => [...prev, panelToClose]);
+    setPanels((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleModelChange = (index, model) => {
+  const handleSelect = (index, provider, model) => {
     setPanels((prev) => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], model };
+      const seenModels = withSeenModel(updated[index].seenModels, provider, model);
+      updated[index] = { provider, model, seenModels };
       return updated;
     });
   };
@@ -254,41 +293,35 @@ export default function App() {
       />
 
       <div className="main-content">
-        {/* Panel count controls */}
+        {/* Panel controls */}
         <div className="panel-controls">
-          <span className="panel-controls-label">Panels</span>
-          <button 
-            className="panel-count-btn" 
-            onClick={() => handlePanelCountChange(Math.max(1, panelCount - 1))}
-            disabled={panelCount <= 1}
-            style={{ opacity: panelCount <= 1 ? 0.5 : 1 }}
+          <span className="panel-controls-label">{panels.length} Panel{panels.length !== 1 ? 's' : ''}</span>
+          <button
+            className="add-panel-btn"
+            onClick={handleAddPanel}
+            disabled={panels.length >= MAX_PANELS}
           >
-            -
-          </button>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', margin: '0 8px' }}>{panelCount}</span>
-          <button 
-            className="panel-count-btn" 
-            onClick={() => handlePanelCountChange(Math.min(4, panelCount + 1))}
-            disabled={panelCount >= 4}
-            style={{ opacity: panelCount >= 4 ? 0.5 : 1 }}
-          >
-            +
+            + Add panel
           </button>
         </div>
 
         {/* Side-by-side comparison */}
         <div className="comparison-view">
-          {panels.slice(0, panelCount).map((panel, i) => (
+          {panels.map((panel, i) => (
             <ChatPanel
               key={i}
               panelIndex={i}
               provider={panel.provider}
               model={panel.model}
+              seenModels={panel.seenModels}
               messages={messages}
               isLoading={isLoading}
               error={panelErrors[`${panel.provider}:${panel.model}`] || (i === 0 ? panelErrors.global : null)}
-              onProviderChange={(p) => handleProviderChange(i, p)}
-              onModelChange={(m) => handleModelChange(i, m)}
+              modelsByProvider={modelsByProvider}
+              onSelect={(provider, model) => handleSelect(i, provider, model)}
+              onAddCustomModel={handleAddCustomModel}
+              onClose={() => handleClosePanel(i)}
+              canClose={panels.length > 1}
               configuredProviders={configuredProviders}
             />
           ))}
