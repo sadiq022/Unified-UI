@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from backend.database import get_db
 from backend.models import APIKey, Conversation, Message
 from backend.schemas import ChatRequest, ChatResponse, ChatResponseItem, MessageResponse
-from backend.providers import get_provider
+from backend.providers import get_provider, is_vision_model
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
 
@@ -40,11 +40,14 @@ def _build_context_for_target(all_messages: list[Message], provider: str, model:
     context_messages = []
     for msg in all_messages:
         if msg.role == "user":
-            context_messages.append({
+            entry = {
                 "role": "user",
                 "content": msg.content,
                 "turn_number": msg.turn_number,
-            })
+            }
+            if msg.image:
+                entry["image"] = msg.image
+            context_messages.append(entry)
         elif msg.role == "assistant" and msg.provider == provider and msg.model == model:
             context_messages.append({
                 "role": "assistant",
@@ -91,6 +94,20 @@ async def _call_model(provider_name: str, model: str, api_key: str, messages: li
         )
 
 
+async def _vision_unsupported_response(provider_name: str, model: str) -> ChatResponseItem:
+    """Placeholder response for a target that can't handle the attached image."""
+    return ChatResponseItem(
+        provider=provider_name,
+        model=model,
+        content="",
+        response_time_ms=0.0,
+        error=(
+            "This model doesn't support image input. Use a vision-capable model "
+            "(e.g. Groq's qwen/qwen3.6-27b or meta-llama/llama-4-scout-17b-16e-instruct)."
+        ),
+    )
+
+
 @router.post("/send", response_model=ChatResponse)
 async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
@@ -120,6 +137,7 @@ async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         turn_number=turn_number,
         role="user",
         content=req.message,
+        image=req.image,
     )
     db.add(user_msg)
     await db.flush()
@@ -148,9 +166,12 @@ async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 )
             api_keys[target.provider] = key_obj.api_key
 
-    # Call all models concurrently, each with its own context (its own past answers only)
+    # Call all models concurrently, each with its own context (its own past answers only).
+    # A target that can't handle the attached image gets a friendly error instead of a wasted API call.
     tasks = [
-        _call_model(
+        _vision_unsupported_response(target.provider, target.model)
+        if req.image and not is_vision_model(target.provider, target.model)
+        else _call_model(
             target.provider,
             target.model,
             api_keys[target.provider],
@@ -188,6 +209,7 @@ async def send_message(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         turn_number=user_msg.turn_number,
         role=user_msg.role,
         content=user_msg.content,
+        image=user_msg.image,
         created_at=user_msg.created_at,
     )
 

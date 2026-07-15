@@ -9,6 +9,7 @@ const PROVIDERS = [
   { id: 'deepseek', name: 'DeepSeek', placeholder: 'sk-...' },
   { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-...' },
   { id: 'nvidia', name: 'NVIDIA', placeholder: 'nvapi-...' },
+  { id: 'cerebras', name: 'Cerebras', placeholder: 'csk-...' },
 ];
 
 export default function ApiKeyManager({ isOpen, onClose, onKeysChange }) {

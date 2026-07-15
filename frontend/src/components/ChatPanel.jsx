@@ -16,6 +16,9 @@ export default function ChatPanel({
   onClose,
   canClose,
   configuredProviders,
+  hideBody,
+  visionModels,
+  restrictToVision,
 }) {
   const messagesEndRef = useRef(null);
 
@@ -34,7 +37,7 @@ export default function ChatPanel({
   });
 
   return (
-    <div className="chat-panel">
+    <div className={`chat-panel${hideBody ? ' chat-panel-header-only' : ''}`}>
       <ModelSelector
         panelIndex={panelIndex}
         provider={provider}
@@ -45,12 +48,18 @@ export default function ChatPanel({
         onClose={onClose}
         canClose={canClose}
         configuredProviders={configuredProviders}
+        visionModels={visionModels}
+        restrictToVision={restrictToVision}
       />
 
-      <div className="messages-area">
+      {hideBody ? null : <div className="messages-area">
         {filteredMessages.length === 0 && !isLoading ? (
           <div className="empty-state">
-            <div className="empty-state-icon">💬</div>
+            <div className="empty-state-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+              </svg>
+            </div>
             <div className="empty-state-text">
               {provider && model
                 ? 'Send a message to start comparing'
@@ -84,7 +93,7 @@ export default function ChatPanel({
         )}
 
         <div ref={messagesEndRef} />
-      </div>
+      </div>}
     </div>
   );
 }

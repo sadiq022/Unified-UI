@@ -64,6 +64,7 @@
   --color-deepseek: #4d6bfe;
   --color-openrouter: #c084fc;
   --color-nvidia: #76b900;
+  --color-cerebras: #f5821f;
 }
 
 /* ── Reset & Base ───────────────────────────────────────────────────────── */
@@ -373,6 +374,19 @@ body {
   overflow: hidden;
 }
 
+.comparison-view-collapsed {
+  flex: 0 0 auto;
+  align-items: flex-start;
+}
+
+.chat-panel-header-only {
+  align-self: flex-start;
+}
+
+.chat-panel-header-only .chat-panel-header {
+  border-bottom: none;
+}
+
 /* ── Chat Panel ─────────────────────────────────────────────────────────── */
 .chat-panel {
   flex: 1;
@@ -410,6 +424,7 @@ body {
 .provider-badge.deepseek { background: rgba(77, 107, 254, 0.15); color: var(--color-deepseek); }
 .provider-badge.openrouter { background: rgba(192, 132, 252, 0.15); color: var(--color-openrouter); }
 .provider-badge.nvidia { background: rgba(118, 185, 0, 0.15); color: var(--color-nvidia); }
+.provider-badge.cerebras { background: rgba(245, 130, 31, 0.15); color: var(--color-cerebras); }
 
 .provider-dot {
   width: 8px;
@@ -425,6 +440,7 @@ body {
 .provider-dot.deepseek { background: var(--color-deepseek); }
 .provider-dot.openrouter { background: var(--color-openrouter); }
 .provider-dot.nvidia { background: var(--color-nvidia); }
+.provider-dot.cerebras { background: var(--color-cerebras); }
 
 .model-select {
   flex: 0 1 auto;
@@ -608,7 +624,7 @@ body {
 }
 
 .empty-state-icon {
-  font-size: 40px;
+  display: flex;
   opacity: 0.4;
 }
 
@@ -659,6 +675,14 @@ body {
   max-width: 85%;
   display: inline-block;
   text-align: left;
+}
+
+.message-image {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
 }
 
 .message-content.assistant {
@@ -798,10 +822,153 @@ body {
   color: var(--text-primary);
 }
 
+/* ── Welcome Hero ───────────────────────────────────────────────────────── */
+.welcome-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+  min-height: 0;
+}
+
+.welcome-hero-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-gradient);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.welcome-hero-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.welcome-hero-subtitle {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  max-width: 420px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+
 /* ── Input Area ─────────────────────────────────────────────────────────── */
 .input-area {
   padding: 4px 20px 20px;
   background: var(--bg-primary);
+}
+
+.example-prompts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.example-prompt-card {
+  text-align: left;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color var(--transition-default), color var(--transition-default), background var(--transition-default);
+}
+
+.example-prompt-card:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.vision-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--accent-cyan);
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+
+.attach-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition-default), background var(--transition-default);
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.attached-image-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px 4px 4px;
+  flex-shrink: 0;
+}
+
+.attached-image-chip img {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attached-image-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attached-image-remove {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+}
+
+.attached-image-remove:hover {
+  color: var(--text-primary);
 }
 
 .input-wrapper {
@@ -810,7 +977,7 @@ body {
   gap: 10px;
   background: var(--glass-bg);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
+  border-radius: 0;
   padding: 10px 10px 10px 20px;
   transition: border-color var(--transition-default), box-shadow var(--transition-default);
   backdrop-filter: blur(var(--glass-blur));
@@ -842,7 +1009,7 @@ body {
 .send-btn {
   width: 36px;
   height: 36px;
-  border-radius: var(--radius-full);
+  border-radius: 0;
   border: none;
   background: var(--accent-gradient);
   color: white;

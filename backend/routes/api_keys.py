@@ -4,7 +4,7 @@ from sqlalchemy import select, delete
 from backend.database import get_db
 from backend.models import APIKey, CustomModel
 from backend.schemas import APIKeyCreate, APIKeyResponse
-from backend.providers import get_models
+from backend.providers import get_models, get_vision_models
 
 router = APIRouter(prefix="/api/keys", tags=["API Keys"])
 
@@ -69,6 +69,12 @@ async def delete_api_key(provider: str, db: AsyncSession = Depends(get_db)):
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"No API key found for provider: {provider}")
     return {"message": f"API key for {provider} deleted"}
+
+
+@router.get("/vision-models")
+async def list_vision_models():
+    """Get the map of provider -> vision-capable (image input) models."""
+    return get_vision_models()
 
 
 @router.get("/models/{provider}")

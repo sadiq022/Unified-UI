@@ -6,4 +6,5 @@ export const PROVIDERS = [
   { id: 'deepseek', name: 'DeepSeek' },
   { id: 'openrouter', name: 'OpenRouter' },
   { id: 'nvidia', name: 'NVIDIA' },
+  { id: 'cerebras', name: 'Cerebras' },
 ];

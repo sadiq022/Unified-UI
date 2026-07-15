@@ -6,6 +6,7 @@ from backend.providers.groq_provider import GroqProvider
 from backend.providers.deepseek_provider import DeepSeekProvider
 from backend.providers.openrouter_provider import OpenRouterProvider
 from backend.providers.nvidia_provider import NvidiaProvider
+from backend.providers.cerebras_provider import CerebrasProvider
 
 PROVIDERS: dict[str, BaseProvider] = {
     "openai": OpenAIProvider(),
@@ -15,6 +16,7 @@ PROVIDERS: dict[str, BaseProvider] = {
     "deepseek": DeepSeekProvider(),
     "openrouter": OpenRouterProvider(),
     "nvidia": NvidiaProvider(),
+    "cerebras": CerebrasProvider(),
 }
 
 # Hardcoded model lists per provider (used as defaults; OpenRouter fetches dynamically)
@@ -36,11 +38,8 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "claude-3-opus-20240229",
     ],
     "gemini": [
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
     ],
     "groq": [
         "llama-3.3-70b-versatile",
@@ -49,6 +48,7 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "qwen/qwen3-32b",
         "qwen/qwen3.6-27b",
         "openai/gpt-oss-20b",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
     ],
     "deepseek": [
         "deepseek-chat",
@@ -70,6 +70,19 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.5-397b-a17b",
         "nvidia/nemotron-3-super-120b-a12b",
     ],
+    "cerebras": [
+        "gemma-4-31b",
+        "zai-glm-4.7",
+        "gpt-oss-120b",
+    ],
+}
+
+# Models that accept image input. None of the other listed models support vision.
+VISION_MODELS: dict[str, list[str]] = {
+    "groq": [
+        "qwen/qwen3.6-27b",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+    ],
 }
 
 
@@ -84,3 +97,13 @@ def get_provider(name: str) -> BaseProvider:
 def get_models(provider_name: str) -> list[str]:
     """Get default model list for a provider."""
     return DEFAULT_MODELS.get(provider_name.lower(), [])
+
+
+def is_vision_model(provider_name: str, model: str) -> bool:
+    """Whether a given provider/model pair can accept image input."""
+    return model in VISION_MODELS.get(provider_name.lower(), [])
+
+
+def get_vision_models() -> dict[str, list[str]]:
+    """Get the full map of provider -> vision-capable models."""
+    return VISION_MODELS

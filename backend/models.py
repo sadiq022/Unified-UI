@@ -16,6 +16,7 @@ class APIKey(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(255), default="New Chat")
@@ -34,6 +35,7 @@ class Message(Base):
     turn_number = Column(Integer, nullable=False)
     role = Column(String(20), nullable=False)  # "user" or "assistant"
     content = Column(Text, nullable=False)
+    image = Column(Text, nullable=True)  # base64 data URL attached to a user message
     provider = Column(String(50), nullable=True)  # null for user messages
     model = Column(String(100), nullable=True)    # null for user messages
     response_time_ms = Column(Float, nullable=True)

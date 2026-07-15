@@ -20,6 +20,7 @@ export const deleteApiKey = (provider) =>
   request(`/api/keys/${provider}`, { method: 'DELETE' });
 export const getModels = (provider) =>
   request(`/api/keys/models/${provider}`);
+export const getVisionModels = () => request('/api/keys/vision-models');
 
 // ── Custom Models ──────────────────────────────────────────
 export const addCustomModel = (provider, model) =>
@@ -35,10 +36,10 @@ export const updateConversationTitle = (id, title) =>
   request(`/api/conversations/${id}/title`, { method: 'PUT', body: JSON.stringify({ title }) });
 
 // ── Chat ───────────────────────────────────────────────────
-export const sendMessage = (conversation_id, message, targets) =>
+export const sendMessage = (conversation_id, message, targets, image = null) =>
   request('/api/chat/send', {
     method: 'POST',
-    body: JSON.stringify({ conversation_id, message, targets }),
+    body: JSON.stringify({ conversation_id, message, targets, image }),
   });
 export const getHistory = (conversation_id) =>
   request(`/api/chat/history/${conversation_id}`);

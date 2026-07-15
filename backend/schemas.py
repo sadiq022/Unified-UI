@@ -65,6 +65,7 @@ class MessageResponse(BaseModel):
     turn_number: int
     role: str
     content: str
+    image: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     response_time_ms: Optional[float] = None
@@ -86,6 +87,7 @@ class ChatRequest(BaseModel):
     conversation_id: int
     message: str
     targets: list[ChatTarget]  # which models to send to
+    image: Optional[str] = None  # base64 data URL, only usable by vision-capable models
 
 
 class ChatResponseItem(BaseModel):

@@ -24,7 +24,12 @@ export default function MessageBubble({ message }) {
 
       <div className={`message-content ${message.role}`}>
         {isUser ? (
-          <p>{message.content}</p>
+          <>
+            {message.image && (
+              <img src={message.image} alt="attached" className="message-image" />
+            )}
+            <p>{message.content}</p>
+          </>
         ) : (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
         )}

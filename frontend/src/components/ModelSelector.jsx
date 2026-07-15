@@ -13,6 +13,8 @@ export default function ModelSelector({
   onAddCustomModel,
   onClose,
   canClose,
+  visionModels,
+  restrictToVision,
 }) {
   const [addingProvider, setAddingProvider] = useState(null);
   const [customValue, setCustomValue] = useState('');
@@ -92,16 +94,26 @@ export default function ModelSelector({
           id={`model-select-${panelIndex}`}
         >
           <option value="">Select Model</option>
-          {PROVIDERS.map((p) => (
-            <optgroup key={p.id} label={`${p.name}${configuredProviders.includes(p.id) ? ' ✓' : ''}`}>
-              {(modelsByProvider[p.id] || []).map((m) => (
-                <option key={`${p.id}::${m}`} value={`${p.id}::${m}`}>
-                  {m}
-                </option>
-              ))}
-              <option value={`${p.id}::${CUSTOM_VALUE}`}>+ Add custom model</option>
-            </optgroup>
-          ))}
+          {PROVIDERS.filter((p) => configuredProviders.includes(p.id)).map((p) => {
+            const availableModels = restrictToVision
+              ? (modelsByProvider[p.id] || []).filter((m) => (visionModels?.[p.id] || []).includes(m))
+              : (modelsByProvider[p.id] || []);
+
+            if (restrictToVision && availableModels.length === 0) return null;
+
+            return (
+              <optgroup key={p.id} label={p.name}>
+                {availableModels.map((m) => (
+                  <option key={`${p.id}::${m}`} value={`${p.id}::${m}`}>
+                    {m}
+                  </option>
+                ))}
+                {!restrictToVision && (
+                  <option value={`${p.id}::${CUSTOM_VALUE}`}>+ Add custom model</option>
+                )}
+              </optgroup>
+            );
+          })}
         </select>
       )}
 
