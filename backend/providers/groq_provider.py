@@ -37,6 +37,7 @@ class GroqProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
+            "max_tokens": 4096,
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:

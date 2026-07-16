@@ -34,6 +34,11 @@ unified_ui.db
 *.db
 *.sqlite
 *.sqlite3
+data/jwt_secret.key
+
+# Personal scratch scripts (repeatedly used to paste real API keys for testing)
+temp.py
+list_models.py
 
 # Node / Frontend
 node_modules/

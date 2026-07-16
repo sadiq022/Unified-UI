@@ -19,6 +19,7 @@ class NvidiaProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
+            "max_tokens": 8192,
         }
 
         # NVIDIA-hosted reasoning models (e.g. deepseek-ai/deepseek-v4-pro) can take

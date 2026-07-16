@@ -7,6 +7,7 @@ export default function ChatPanel({
   provider,
   model,
   seenModels,
+  visibleSinceTurn,
   messages,
   isLoading,
   error,
@@ -28,7 +29,9 @@ export default function ChatPanel({
 
   // Show user messages, and assistant replies from any model this panel has ever used
   // (not just the currently selected one) so switching models doesn't hide prior answers.
+  // A panel added mid-conversation never shows turns that predate it joining.
   const filteredMessages = messages.filter((msg) => {
+    if ((msg.turn_number || 0) <= visibleSinceTurn) return false;
     if (msg.role === 'user') return true;
     if (msg.role === 'assistant') {
       return seenModels.some((pm) => pm.provider === msg.provider && pm.model === msg.model);

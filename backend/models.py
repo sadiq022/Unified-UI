@@ -4,11 +4,22 @@ from sqlalchemy.orm import relationship
 from backend.database import Base
 
 
-class APIKey(Base):
-    __tablename__ = "api_keys"
+class User(Base):
+    __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    provider = Column(String(50), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_apikey_user_provider"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, index=True)
     api_key = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
@@ -19,7 +30,9 @@ class Conversation(Base):
     __table_args__ = {"sqlite_autoincrement": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), default="New Chat")
+    panel_layout = Column(Text, nullable=True)  # JSON-serialized panel config: [{provider, model, seenModels, visibleSinceTurn}]
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
@@ -47,9 +60,10 @@ class Message(Base):
 
 class CustomModel(Base):
     __tablename__ = "custom_models"
-    __table_args__ = (UniqueConstraint("provider", "model", name="uq_custom_model_provider_model"),)
+    __table_args__ = (UniqueConstraint("user_id", "provider", "model", name="uq_custom_model_user_provider_model"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, index=True)
     model = Column(String(200), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

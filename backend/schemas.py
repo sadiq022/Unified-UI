@@ -1,6 +1,49 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 from datetime import datetime
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+class UserSignup(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def email_must_look_valid(cls, v: str) -> str:
+        v = v.strip().lower()
+        if "@" not in v or "." not in v.split("@")[-1] or len(v) < 5:
+            raise ValueError("Enter a valid email address")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+    user: UserResponse
 
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
@@ -50,11 +93,16 @@ class ConversationUpdate(BaseModel):
 class ConversationResponse(BaseModel):
     id: int
     title: str
+    panel_layout: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class PanelLayoutUpdate(BaseModel):
+    panels: list[dict]
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────

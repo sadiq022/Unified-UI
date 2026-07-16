@@ -2,9 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ApiKeyManager from './components/ApiKeyManager.jsx';
+import Auth from './components/Auth.jsx';
 import { PROVIDERS } from './constants.js';
 import {
   getConversations,
+  getConversation,
   createConversation,
   deleteConversation,
   getHistory,
@@ -13,13 +15,19 @@ import {
   getVisionModels,
   addCustomModel,
   sendMessage,
+  updatePanelLayout,
+  getToken,
+  setToken,
+  getTokenExpiryMs,
+  getMe,
+  AUTH_LOGOUT_EVENT,
 } from './api.js';
 
 const MAX_PANELS = 4;
 const ACTIVE_CONV_STORAGE_KEY = 'unifiedui:activeConvId';
 const DEFAULT_PANELS = [
-  { provider: '', model: '', seenModels: [] },
-  { provider: '', model: '', seenModels: [] },
+  { provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
+  { provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
 ];
 
 const EXAMPLE_PROMPTS = [
@@ -37,6 +45,11 @@ function withSeenModel(seenModels, provider, model) {
 }
 
 export default function App() {
+  // ── Auth state ─────────────────────────────────────────────
+  const [authChecked, setAuthChecked] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const logoutTimerRef = useRef(null);
+
   // ── State ──────────────────────────────────────────────────
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(() => {
@@ -58,13 +71,77 @@ export default function App() {
   const activeConvIdRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // ── Load conversations on mount ────────────────────────────
+  // ── Restore session from a stored token on mount ───────────
   useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setAuthChecked(true);
+      return;
+    }
+    const expMs = getTokenExpiryMs(token);
+    if (expMs && expMs <= Date.now()) {
+      setToken(null);
+      setAuthChecked(true);
+      return;
+    }
+    getMe()
+      .then((user) => {
+        setCurrentUser(user);
+        if (expMs) scheduleAutoLogout(expMs);
+      })
+      .catch(() => {})
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  // ── Force logout the moment the token expires, or on any 401 ──
+  const handleLogout = useCallback(() => {
+    setToken(null);
+    setCurrentUser(null);
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+    setConversations([]);
+    setActiveConvId(null);
+    setMessages([]);
+    setPanels(DEFAULT_PANELS);
+    setClosedPanels([]);
+    setPanelErrors({});
+    setConfiguredProviders([]);
+    setModelsByProvider({});
+    setVisionModels({});
+    setAttachedImage(null);
+    setInputValue('');
+  }, []);
+
+  const scheduleAutoLogout = (expiryMs) => {
+    if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
+    const msUntilExpiry = expiryMs - Date.now();
+    if (msUntilExpiry <= 0) {
+      handleLogout();
+      return;
+    }
+    logoutTimerRef.current = setTimeout(handleLogout, msUntilExpiry);
+  };
+
+  useEffect(() => {
+    window.addEventListener(AUTH_LOGOUT_EVENT, handleLogout);
+    return () => window.removeEventListener(AUTH_LOGOUT_EVENT, handleLogout);
+  }, [handleLogout]);
+
+  const handleAuthenticated = (user, expiresAt) => {
+    setCurrentUser(user);
+    scheduleAutoLogout(new Date(expiresAt).getTime());
+  };
+
+  // ── Load app data once logged in ───────────────────────────
+  useEffect(() => {
+    if (!currentUser) return;
     loadConversations();
     loadConfiguredProviders();
     loadAllModels();
     loadVisionModels();
-  }, []);
+  }, [currentUser]);
 
   // ── Persist the active conversation so a page refresh reopens it ──
   useEffect(() => {
@@ -143,15 +220,34 @@ export default function App() {
 
   const loadHistory = async (convId) => {
     try {
-      const data = await getHistory(convId);
+      const [data, conv] = await Promise.all([
+        getHistory(convId),
+        getConversation(convId).catch(() => null),
+      ]);
 
       // Ignore responses for a conversation we've since navigated away from
       // (e.g. clicking a chat then immediately hitting "New Comparison").
       if (activeConvIdRef.current !== convId) return;
 
       setMessages(data);
+      setClosedPanels([]);
 
-      // Auto-restore panels based on history
+      // Restore the exact panel layout the user last configured for this
+      // conversation (added/removed panels, model choices) if one was saved.
+      if (conv?.panel_layout) {
+        try {
+          const savedPanels = JSON.parse(conv.panel_layout);
+          if (Array.isArray(savedPanels) && savedPanels.length > 0) {
+            setPanels(savedPanels);
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to parse saved panel layout:', err);
+        }
+      }
+
+      // Legacy fallback for conversations saved before panel layout persistence
+      // existed: reconstruct panels from which models actually answered.
       if (data && data.length > 0) {
         const uniquePanels = [];
         const seen = new Set();
@@ -165,6 +261,7 @@ export default function App() {
                 provider: msg.provider,
                 model: msg.model,
                 seenModels: [{ provider: msg.provider, model: msg.model }],
+                visibleSinceTurn: 0,
               });
             }
           }
@@ -173,12 +270,20 @@ export default function App() {
 
         if (uniquePanels.length > 0) {
           setPanels(uniquePanels.reverse());
-          setClosedPanels([]);
         }
       }
     } catch (err) {
       console.error('Failed to load history:', err);
     }
+  };
+
+  // Persist the panel layout instantly whenever it changes, so switching
+  // conversations and coming back doesn't lose added/removed panels or model picks.
+  const savePanelLayout = (convId, panelsToSave) => {
+    if (!convId) return;
+    updatePanelLayout(convId, panelsToSave).catch((err) => {
+      console.error('Failed to save panel layout:', err);
+    });
   };
 
   // ── Conversation actions ───────────────────────────────────
@@ -213,29 +318,39 @@ export default function App() {
   // only creates a blank panel once the closed-panel stash is empty.
   const handleAddPanel = () => {
     if (panels.length >= MAX_PANELS) return;
+    let nextPanels;
     if (closedPanels.length > 0) {
       const restored = closedPanels[closedPanels.length - 1];
       setClosedPanels((prev) => prev.slice(0, -1));
-      setPanels((prev) => [...prev, restored]);
+      nextPanels = [...panels, restored];
     } else {
-      setPanels((prev) => [...prev, { provider: '', model: '', seenModels: [] }]);
+      // A brand-new panel shouldn't see any messages that predate it — only
+      // turns sent after it joins. Mark the current latest turn as its cutoff.
+      const currentMaxTurn = messages.reduce((max, m) => Math.max(max, m.turn_number || 0), 0);
+      nextPanels = [
+        ...panels,
+        { provider: '', model: '', seenModels: [], visibleSinceTurn: currentMaxTurn },
+      ];
     }
+    setPanels(nextPanels);
+    savePanelLayout(activeConvId, nextPanels);
   };
 
   const handleClosePanel = (index) => {
     if (panels.length <= 1) return;
     const panelToClose = panels[index];
     setClosedPanels((prev) => [...prev, panelToClose]);
-    setPanels((prev) => prev.filter((_, i) => i !== index));
+    const nextPanels = panels.filter((_, i) => i !== index);
+    setPanels(nextPanels);
+    savePanelLayout(activeConvId, nextPanels);
   };
 
   const handleSelect = (index, provider, model) => {
-    setPanels((prev) => {
-      const updated = [...prev];
-      const seenModels = withSeenModel(updated[index].seenModels, provider, model);
-      updated[index] = { provider, model, seenModels };
-      return updated;
-    });
+    const seenModels = withSeenModel(panels[index].seenModels, provider, model);
+    const nextPanels = [...panels];
+    nextPanels[index] = { ...nextPanels[index], provider, model, seenModels };
+    setPanels(nextPanels);
+    savePanelLayout(activeConvId, nextPanels);
   };
 
   // ── Send message ───────────────────────────────────────────
@@ -364,6 +479,14 @@ export default function App() {
   };
 
   // ── Render ─────────────────────────────────────────────────
+  if (!authChecked) return null;
+  if (!currentUser) return <Auth onAuthenticated={handleAuthenticated} />;
+
+  // Keep showing the welcome hero only while truly idle — once the first
+  // message is in flight, switch to the panel view so the loading indicator
+  // (and eventually the response) is visible instead of looking like nothing happened.
+  const showWelcome = messages.length === 0 && !isLoading;
+
   return (
     <div className="app-layout">
       <Sidebar
@@ -373,6 +496,8 @@ export default function App() {
         onCreate={handleCreateConversation}
         onDelete={handleDeleteConversation}
         onOpenSettings={() => setShowSettings(true)}
+        userEmail={currentUser.email}
+        onLogout={handleLogout}
       />
 
       <div className="main-content">
@@ -389,7 +514,7 @@ export default function App() {
         </div>
 
         {/* Side-by-side comparison */}
-        <div className={`comparison-view${messages.length === 0 ? ' comparison-view-collapsed' : ''}`}>
+        <div className={`comparison-view${showWelcome ? ' comparison-view-collapsed' : ''}`}>
           {panels.map((panel, i) => (
             <ChatPanel
               key={i}
@@ -397,6 +522,7 @@ export default function App() {
               provider={panel.provider}
               model={panel.model}
               seenModels={panel.seenModels}
+              visibleSinceTurn={panel.visibleSinceTurn ?? 0}
               messages={messages}
               isLoading={isLoading}
               error={panelErrors[`${panel.provider}:${panel.model}`] || (i === 0 ? panelErrors.global : null)}
@@ -406,14 +532,14 @@ export default function App() {
               onClose={() => handleClosePanel(i)}
               canClose={panels.length > 1}
               configuredProviders={configuredProviders}
-              hideBody={messages.length === 0}
+              hideBody={showWelcome}
               visionModels={visionModels}
               restrictToVision={!!attachedImage}
             />
           ))}
         </div>
 
-        {messages.length === 0 && (
+        {showWelcome && (
           <div className="welcome-hero">
             <div className="welcome-hero-icon">
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

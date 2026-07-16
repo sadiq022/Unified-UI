@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
-from backend.routes import api_keys, conversations, chat, custom_models
+from backend.routes import api_keys, conversations, chat, custom_models, auth
 
 # Path to the built React frontend
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
@@ -35,6 +35,7 @@ app.add_middleware(
 )
 
 # Register API routes
+app.include_router(auth.router)
 app.include_router(api_keys.router)
 app.include_router(conversations.router)
 app.include_router(chat.router)
