@@ -1,3 +1,4 @@
+import json
 import httpx
 from backend.providers.base import BaseProvider
 
@@ -64,3 +65,53 @@ class AnthropicProvider(BaseProvider):
             "content": text,
             "token_count": token_count if token_count > 0 else None,
         }
+
+    def _build_request(self, messages: list[dict]) -> tuple[list[dict], str]:
+        formatted = self.format_messages_with_turns(messages)
+        system_content = ""
+        api_messages = []
+        for msg in formatted:
+            if msg["role"] == "system":
+                system_content += msg["content"] + "\n"
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        merged = []
+        for msg in api_messages:
+            if merged and merged[-1]["role"] == msg["role"]:
+                merged[-1]["content"] += "\n\n" + msg["content"]
+            else:
+                merged.append(msg)
+        return merged, system_content.strip()
+
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
+        merged, system_content = self._build_request(messages)
+
+        headers = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {"model": model, "max_tokens": 4096, "messages": merged, "stream": True}
+        if system_content:
+            payload["system"] = system_content
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", self.BASE_URL, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text")
+                            if text:
+                                yield text

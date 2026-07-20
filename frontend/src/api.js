@@ -77,6 +77,8 @@ export const addCustomModel = (provider, model) =>
 // ── Conversations ──────────────────────────────────────────
 export const getConversations = () => request('/api/conversations');
 export const getConversation = (id) => request(`/api/conversations/${id}`);
+export const searchConversations = (q) =>
+  request(`/api/conversations/search?q=${encodeURIComponent(q)}`);
 export const createConversation = (title = 'New Chat') =>
   request('/api/conversations', { method: 'POST', body: JSON.stringify({ title }) });
 export const deleteConversation = (id) =>
@@ -86,11 +88,76 @@ export const updateConversationTitle = (id, title) =>
 export const updatePanelLayout = (id, panels) =>
   request(`/api/conversations/${id}/panels`, { method: 'PUT', body: JSON.stringify({ panels }) });
 
+// ── Panel Presets ────────────────────────────────────────────
+export const getPanelPresets = () => request('/api/panel-presets');
+export const savePanelPreset = (name, panels) =>
+  request('/api/panel-presets', { method: 'POST', body: JSON.stringify({ name, panels }) });
+export const deletePanelPreset = (id) =>
+  request(`/api/panel-presets/${id}`, { method: 'DELETE' });
+
 // ── Chat ───────────────────────────────────────────────────
 export const sendMessage = (conversation_id, message, targets, image = null) =>
   request('/api/chat/send', {
     method: 'POST',
     body: JSON.stringify({ conversation_id, message, targets, image }),
   });
+
+// Streams SSE events from /api/chat/send-stream, calling onEvent(payload) for
+// each one. Doesn't use the request() helper since it needs the raw response
+// body reader instead of a single parsed JSON result.
+export async function sendMessageStream(conversation_id, message, targets, image, onEvent) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+  const res = await fetch(`${BASE}/api/chat/send-stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ conversation_id, message, targets, image }),
+  });
+
+  if (res.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event(AUTH_LOGOUT_EVENT));
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const line = rawEvent.split('\n').find((l) => l.startsWith('data:'));
+      if (!line) continue;
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()));
+      } catch (err) {
+        console.error('Failed to parse stream event:', err);
+      }
+    }
+  }
+}
+
 export const getHistory = (conversation_id) =>
   request(`/api/chat/history/${conversation_id}`);
+export const retryMessage = (conversation_id, turn_number, provider, model) =>
+  request('/api/chat/retry', {
+    method: 'POST',
+    body: JSON.stringify({ conversation_id, turn_number, provider, model }),
+  });
+export const editMessage = (conversation_id, message_id, content, targets, image = null) =>
+  request('/api/chat/edit', {
+    method: 'POST',
+    body: JSON.stringify({ conversation_id, message_id, content, targets, image }),
+  });

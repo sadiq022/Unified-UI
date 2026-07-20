@@ -67,3 +67,14 @@ class CustomModel(Base):
     provider = Column(String(50), nullable=False, index=True)
     model = Column(String(200), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class PanelPreset(Base):
+    __tablename__ = "panel_presets"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_preset_user_name"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    config = Column(Text, nullable=False)  # JSON: [{provider, model}, ...]
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

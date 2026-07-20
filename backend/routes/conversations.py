@@ -1,9 +1,9 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_
 from backend.database import get_db
-from backend.models import Conversation, User
+from backend.models import Conversation, Message, User
 from backend.schemas import ConversationCreate, ConversationUpdate, ConversationResponse, PanelLayoutUpdate
 from backend.auth import get_current_user
 
@@ -16,6 +16,29 @@ async def list_conversations(db: AsyncSession = Depends(get_db), current_user: U
     result = await db.execute(
         select(Conversation)
         .where(Conversation.user_id == current_user.id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/search", response_model=list[ConversationResponse])
+async def search_conversations(
+    q: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Search the current user's conversations by title OR message content."""
+    term = q.strip()
+    if not term:
+        return []
+    like = f"%{term}%"
+
+    matching_conv_ids = select(Message.conversation_id).where(Message.content.ilike(like))
+
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == current_user.id)
+        .where(or_(Conversation.title.ilike(like), Conversation.id.in_(matching_conv_ids)))
         .order_by(Conversation.updated_at.desc())
     )
     return result.scalars().all()

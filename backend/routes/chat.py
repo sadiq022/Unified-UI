@@ -1,13 +1,17 @@
 import asyncio
+import json
 import re
 import time
 import traceback
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from backend.database import get_db
+from sqlalchemy import select, func, delete
+from backend.database import get_db, async_session
 from backend.models import APIKey, Conversation, Message, User
-from backend.schemas import ChatRequest, ChatResponse, ChatResponseItem, MessageResponse
+from backend.schemas import (
+    ChatRequest, ChatResponse, ChatResponseItem, MessageResponse, RetryRequest, EditMessageRequest,
+)
 from backend.providers import get_provider, is_vision_model
 from backend.auth import get_current_user
 
@@ -216,6 +220,370 @@ async def send_message(
         conv.title = req.message[:60] + ("..." if len(req.message) > 60 else "")
 
     await db.flush()
+
+    user_msg_response = MessageResponse(
+        id=user_msg.id,
+        conversation_id=user_msg.conversation_id,
+        turn_number=user_msg.turn_number,
+        role=user_msg.role,
+        content=user_msg.content,
+        image=user_msg.image,
+        created_at=user_msg.created_at,
+    )
+
+    return ChatResponse(
+        turn_number=turn_number,
+        user_message=user_msg_response,
+        responses=list(responses),
+    )
+
+
+async def _stream_target(queue: asyncio.Queue, idx: int, provider_name: str, model: str, api_key: str, messages: list[dict]):
+    """Stream one model's response, pushing delta/done/error events onto the shared queue."""
+    start = time.time()
+    accumulated = ""
+    try:
+        provider = get_provider(provider_name)
+        async for delta in provider.chat_stream(messages, model, api_key):
+            accumulated += delta
+            await queue.put({"idx": idx, "provider": provider_name, "model": model, "type": "delta", "content": delta})
+        elapsed_ms = round((time.time() - start) * 1000, 1)
+        cleaned = _strip_think_blocks(_strip_turn_prefix(accumulated))
+        await queue.put({
+            "idx": idx, "provider": provider_name, "model": model, "type": "done",
+            "content": cleaned, "response_time_ms": elapsed_ms,
+        })
+    except Exception as e:
+        elapsed_ms = round((time.time() - start) * 1000, 1)
+        error_detail = str(e)
+        if hasattr(e, "response"):
+            try:
+                error_detail = e.response.text
+            except Exception:
+                pass
+        if not error_detail:
+            error_detail = f"{type(e).__name__} after {elapsed_ms / 1000:.1f}s"
+        await queue.put({
+            "idx": idx, "provider": provider_name, "model": model, "type": "error",
+            "error": error_detail, "response_time_ms": elapsed_ms,
+        })
+
+
+@router.post("/send-stream")
+async def send_message_stream(
+    req: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Same as /send, but streams each model's response as it's generated over
+    Server-Sent Events instead of waiting for every model to fully finish.
+    """
+    conv_result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == req.conversation_id, Conversation.user_id == current_user.id
+        )
+    )
+    conv = conv_result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    max_turn = await db.execute(
+        select(func.max(Message.turn_number)).where(Message.conversation_id == req.conversation_id)
+    )
+    current_max = max_turn.scalar() or 0
+    turn_number = current_max + 1
+
+    user_msg = Message(
+        conversation_id=req.conversation_id,
+        turn_number=turn_number,
+        role="user",
+        content=req.message,
+        image=req.image,
+    )
+    db.add(user_msg)
+    await db.flush()
+    await db.refresh(user_msg)
+
+    history_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == req.conversation_id)
+        .order_by(Message.created_at)
+    )
+    all_messages = history_result.scalars().all()
+
+    api_keys = {}
+    for target in req.targets:
+        if target.provider not in api_keys:
+            key_result = await db.execute(
+                select(APIKey).where(
+                    APIKey.user_id == current_user.id, APIKey.provider == target.provider
+                )
+            )
+            key_obj = key_result.scalar_one_or_none()
+            if not key_obj:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No API key configured for provider: {target.provider}"
+                )
+            api_keys[target.provider] = key_obj.api_key
+
+    # Everything the generator needs, captured as plain data — the `db` session
+    # injected above is torn down once this function returns, before the
+    # streamed body actually runs, so it can't be used inside the generator.
+    context_by_target = [_build_context_for_target(all_messages, t.provider, t.model) for t in req.targets]
+    targets = list(req.targets)
+    conversation_id = req.conversation_id
+    image = req.image
+    user_message_payload = {
+        "id": user_msg.id,
+        "conversation_id": user_msg.conversation_id,
+        "turn_number": user_msg.turn_number,
+        "role": user_msg.role,
+        "content": user_msg.content,
+        "image": user_msg.image,
+        "created_at": user_msg.created_at.isoformat(),
+    }
+    should_set_title = conv.title == "New Chat" and turn_number == 1
+    title_text = req.message[:60] + ("..." if len(req.message) > 60 else "")
+
+    async def event_generator():
+        yield f"data: {json.dumps({'type': 'start', 'turn_number': turn_number, 'user_message': user_message_payload})}\n\n"
+
+        queue: asyncio.Queue = asyncio.Queue()
+        tasks = []
+        for idx, target in enumerate(targets):
+            if image and not is_vision_model(target.provider, target.model):
+                await queue.put({
+                    "idx": idx, "provider": target.provider, "model": target.model, "type": "error",
+                    "error": (
+                        "This model doesn't support image input. Use a vision-capable model "
+                        "(e.g. Groq's qwen/qwen3.6-27b or meta-llama/llama-4-scout-17b-16e-instruct)."
+                    ),
+                    "response_time_ms": 0.0,
+                })
+                continue
+            tasks.append(asyncio.create_task(
+                _stream_target(queue, idx, target.provider, target.model, api_keys[target.provider], context_by_target[idx])
+            ))
+
+        remaining = len(targets)
+        to_save = []
+        while remaining > 0:
+            item = await queue.get()
+            yield f"data: {json.dumps(item)}\n\n"
+            if item["type"] in ("done", "error"):
+                remaining -= 1
+                if item["type"] == "done":
+                    to_save.append(item)
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+        # Persist with a fresh session — the request-scoped one is already closed.
+        async with async_session() as session:
+            for item in to_save:
+                session.add(Message(
+                    conversation_id=conversation_id,
+                    turn_number=turn_number,
+                    role="assistant",
+                    content=item["content"],
+                    provider=item["provider"],
+                    model=item["model"],
+                    response_time_ms=item["response_time_ms"],
+                ))
+            if should_set_title:
+                title_result = await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+                title_conv = title_result.scalar_one_or_none()
+                if title_conv:
+                    title_conv.title = title_text
+            await session.commit()
+
+        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/retry", response_model=ChatResponseItem)
+async def retry_message(
+    req: RetryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Regenerate a single model's response for a past turn, without touching
+    any other panel's answer for that turn.
+    """
+    conv_result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == req.conversation_id, Conversation.user_id == current_user.id
+        )
+    )
+    if not conv_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    key_result = await db.execute(
+        select(APIKey).where(APIKey.user_id == current_user.id, APIKey.provider == req.provider)
+    )
+    key_obj = key_result.scalar_one_or_none()
+    if not key_obj:
+        raise HTTPException(status_code=400, detail=f"No API key configured for provider: {req.provider}")
+
+    history_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == req.conversation_id)
+        .order_by(Message.created_at)
+    )
+    all_messages = history_result.scalars().all()
+
+    user_msg_for_turn = next(
+        (m for m in all_messages if m.role == "user" and m.turn_number == req.turn_number), None
+    )
+    if not user_msg_for_turn:
+        raise HTTPException(status_code=404, detail="That turn no longer exists")
+
+    existing_assistant = next(
+        (
+            m for m in all_messages
+            if m.role == "assistant"
+            and m.turn_number == req.turn_number
+            and m.provider == req.provider
+            and m.model == req.model
+        ),
+        None,
+    )
+
+    # Context as of this turn only — excluding the stale answer we're about to replace.
+    context_source = [
+        m for m in all_messages
+        if m.turn_number <= req.turn_number and m is not existing_assistant
+    ]
+    context_messages = _build_context_for_target(context_source, req.provider, req.model)
+
+    if user_msg_for_turn.image and not is_vision_model(req.provider, req.model):
+        return await _vision_unsupported_response(req.provider, req.model)
+
+    resp = await _call_model(req.provider, req.model, key_obj.api_key, context_messages)
+
+    if not resp.error:
+        if existing_assistant:
+            existing_assistant.content = resp.content
+            existing_assistant.response_time_ms = resp.response_time_ms
+            existing_assistant.token_count = resp.token_count
+        else:
+            db.add(Message(
+                conversation_id=req.conversation_id,
+                turn_number=req.turn_number,
+                role="assistant",
+                provider=req.provider,
+                model=req.model,
+                content=resp.content,
+                response_time_ms=resp.response_time_ms,
+                token_count=resp.token_count,
+            ))
+        await db.flush()
+
+    return resp
+
+
+@router.post("/edit", response_model=ChatResponse)
+async def edit_message(
+    req: EditMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Edit a past user message and regenerate responses for that turn. Everything
+    after that turn (including the stale answers to the pre-edit question) is
+    discarded, since it was all built on a question that no longer exists.
+    """
+    conv_result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == req.conversation_id, Conversation.user_id == current_user.id
+        )
+    )
+    conv = conv_result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    msg_result = await db.execute(
+        select(Message).where(Message.id == req.message_id, Message.conversation_id == req.conversation_id)
+    )
+    user_msg = msg_result.scalar_one_or_none()
+    if not user_msg or user_msg.role != "user":
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    turn_number = user_msg.turn_number
+    user_msg.content = req.content
+    user_msg.image = req.image
+    await db.flush()
+
+    # Discard everything built on the pre-edit question: this turn's old
+    # answers, plus every later turn (their context is now stale).
+    await db.execute(
+        delete(Message).where(
+            Message.conversation_id == req.conversation_id,
+            Message.turn_number >= turn_number,
+            Message.id != user_msg.id,
+        )
+    )
+    await db.flush()
+
+    history_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == req.conversation_id)
+        .order_by(Message.created_at)
+    )
+    all_messages = history_result.scalars().all()
+
+    api_keys = {}
+    for target in req.targets:
+        if target.provider not in api_keys:
+            key_result = await db.execute(
+                select(APIKey).where(
+                    APIKey.user_id == current_user.id, APIKey.provider == target.provider
+                )
+            )
+            key_obj = key_result.scalar_one_or_none()
+            if not key_obj:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No API key configured for provider: {target.provider}"
+                )
+            api_keys[target.provider] = key_obj.api_key
+
+    tasks = [
+        _vision_unsupported_response(target.provider, target.model)
+        if req.image and not is_vision_model(target.provider, target.model)
+        else _call_model(
+            target.provider,
+            target.model,
+            api_keys[target.provider],
+            _build_context_for_target(all_messages, target.provider, target.model),
+        )
+        for target in req.targets
+    ]
+    responses = await asyncio.gather(*tasks)
+
+    for resp in responses:
+        if not resp.error:
+            db.add(Message(
+                conversation_id=req.conversation_id,
+                turn_number=turn_number,
+                role="assistant",
+                content=resp.content,
+                provider=resp.provider,
+                model=resp.model,
+                response_time_ms=resp.response_time_ms,
+                token_count=resp.token_count,
+            ))
+
+    await db.flush()
+    await db.refresh(user_msg)
 
     user_msg_response = MessageResponse(
         id=user_msg.id,

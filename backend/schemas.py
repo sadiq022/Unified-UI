@@ -151,3 +151,35 @@ class ChatResponse(BaseModel):
     turn_number: int
     user_message: MessageResponse
     responses: list[ChatResponseItem]
+
+
+class RetryRequest(BaseModel):
+    conversation_id: int
+    turn_number: int
+    provider: str
+    model: str
+
+
+class EditMessageRequest(BaseModel):
+    conversation_id: int
+    message_id: int
+    content: str
+    targets: list[ChatTarget]
+    image: Optional[str] = None
+
+
+# ── Panel Presets ───────────────────────────────────────────────────────────────
+
+class PanelPresetCreate(BaseModel):
+    name: str
+    panels: list[dict]
+
+
+class PanelPresetResponse(BaseModel):
+    id: int
+    name: str
+    config: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

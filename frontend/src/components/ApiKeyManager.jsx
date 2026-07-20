@@ -94,6 +94,10 @@ export default function ApiKeyManager({ isOpen, onClose, onKeysChange }) {
                     onChange={(e) => setInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
                     onKeyDown={(e) => e.key === 'Enter' && handleSave(p.id)}
                     id={`api-key-input-${p.id}`}
+                    name={`api-key-${p.id}`}
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore
                   />
                   <button
                     className="api-key-save-btn"

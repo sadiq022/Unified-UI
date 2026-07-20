@@ -20,6 +20,9 @@ export default function ChatPanel({
   hideBody,
   visionModels,
   restrictToVision,
+  onRetry,
+  retryingKey,
+  onEdit,
 }) {
   const messagesEndRef = useRef(null);
 
@@ -27,8 +30,10 @@ export default function ChatPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  // Show user messages, and assistant replies from any model this panel has ever used
-  // (not just the currently selected one) so switching models doesn't hide prior answers.
+  // Show user messages, and assistant replies from any model this panel has ever
+  // used — switching models never makes prior answers vanish. A divider is
+  // inserted wherever the model actually changes so the switch is visible
+  // instead of looking like an unexplained mix of answers.
   // A panel added mid-conversation never shows turns that predate it joining.
   const filteredMessages = messages.filter((msg) => {
     if ((msg.turn_number || 0) <= visibleSinceTurn) return false;
@@ -38,6 +43,16 @@ export default function ChatPanel({
     }
     return false;
   });
+
+  let lastAssistantKey = null;
+
+  // With streaming, panels finish at different times — only show "Thinking..."
+  // for a panel that hasn't started/finished streaming its own answer yet for
+  // the latest turn, instead of a blanket indicator on every panel at once.
+  const latestTurn = messages.reduce((max, m) => Math.max(max, m.turn_number || 0), 0);
+  const hasCurrentTurnResponse = filteredMessages.some(
+    (m) => m.role === 'assistant' && m.turn_number === latestTurn
+  );
 
   return (
     <div className={`chat-panel${hideBody ? ' chat-panel-header-only' : ''}`}>
@@ -70,12 +85,37 @@ export default function ChatPanel({
             </div>
           </div>
         ) : (
-          filteredMessages.map((msg, i) => (
-            <MessageBubble key={msg.id || `temp-${i}`} message={msg} />
-          ))
+          filteredMessages.flatMap((msg, i) => {
+            const elements = [];
+            if (msg.role === 'assistant') {
+              const key = `${msg.provider}:${msg.model}`;
+              if (lastAssistantKey !== null && key !== lastAssistantKey) {
+                elements.push(
+                  <div key={`switch-${msg.id || i}`} className="model-switch-divider">
+                    <span>Switched to {msg.model}</span>
+                  </div>
+                );
+              }
+              lastAssistantKey = key;
+            }
+            const isRetrying = msg.role === 'assistant'
+              && retryingKey === `${msg.provider}:${msg.model}:${msg.turn_number}`;
+            elements.push(
+              <MessageBubble
+                key={msg.id || `temp-${i}`}
+                message={msg}
+                onRetry={msg.role === 'assistant' && onRetry
+                  ? (m) => onRetry({ provider: m.provider, model: m.model, turn_number: m.turn_number })
+                  : undefined}
+                isRetrying={isRetrying}
+                onEdit={msg.role === 'user' ? onEdit : undefined}
+              />
+            );
+            return elements;
+          })
         )}
 
-        {isLoading && (
+        {isLoading && !hasCurrentTurnResponse && (
           <div className="message-bubble">
             <div className="message-header">
               <span className={`provider-badge ${provider}`}>{provider}</span>
@@ -92,7 +132,19 @@ export default function ChatPanel({
         )}
 
         {error && (
-          <div className="error-banner">⚠️ {error}</div>
+          <div className="error-banner">
+            ⚠️ {error.message}
+            {error.turnNumber != null && onRetry && (
+              <button
+                type="button"
+                className="error-retry-btn"
+                onClick={() => onRetry({ provider, model, turn_number: error.turnNumber })}
+                disabled={retryingKey === `${provider}:${model}:${error.turnNumber}`}
+              >
+                {retryingKey === `${provider}:${model}:${error.turnNumber}` ? 'Retrying...' : 'Retry'}
+              </button>
+            )}
+          </div>
         )}
 
         <div ref={messagesEndRef} />

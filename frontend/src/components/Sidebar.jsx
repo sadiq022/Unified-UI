@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { searchConversations } from '../api.js';
 
 function formatDateGroup(dateStr) {
   const date = new Date(dateStr);
@@ -27,12 +28,40 @@ function groupByDate(conversations) {
 
 export default function Sidebar({ conversations, activeId, onSelect, onCreate, onDelete, onOpenSettings, userEmail, onLogout }) {
   const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null); // null = no active search
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef(null);
+  const searchSeq = useRef(0);
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return conversations;
-    const q = query.trim().toLowerCase();
-    return conversations.filter((c) => c.title.toLowerCase().includes(q));
-  }, [conversations, query]);
+  // Debounced full-text search across conversation titles AND message content.
+  useEffect(() => {
+    const q = query.trim();
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (!q) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    const seq = ++searchSeq.current;
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const results = await searchConversations(q);
+        if (seq === searchSeq.current) setSearchResults(results);
+      } catch (err) {
+        console.error('Search failed:', err);
+        if (seq === searchSeq.current) setSearchResults([]);
+      } finally {
+        if (seq === searchSeq.current) setSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
+
+  const filtered = query.trim() ? (searchResults || []) : conversations;
 
   const groups = useMemo(() => groupByDate(filtered), [filtered]);
 
@@ -53,9 +82,13 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
           </span>
           <input
             type="text"
+            name="conversation-search"
             placeholder="Search conversations"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            autoComplete="off"
+            data-lpignore="true"
+            data-1p-ignore
           />
         </div>
       </div>
@@ -72,7 +105,11 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
       </div>
 
       <div className="sidebar-conversations">
-        {filtered.length === 0 ? (
+        {searching ? (
+          <div style={{ padding: '20px 12px', textAlign: 'center' }}>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Searching...</p>
+          </div>
+        ) : filtered.length === 0 ? (
           <div style={{ padding: '20px 12px', textAlign: 'center' }}>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
               {query ? 'No matches found.' : <>No conversations yet.<br />Start a new comparison!</>}

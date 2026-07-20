@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ApiKeyManager from './components/ApiKeyManager.jsx';
 import Auth from './components/Auth.jsx';
+import PresetsMenu from './components/PresetsMenu.jsx';
 import { PROVIDERS } from './constants.js';
 import {
   getConversations,
@@ -14,8 +15,13 @@ import {
   getModels,
   getVisionModels,
   addCustomModel,
-  sendMessage,
+  sendMessageStream,
+  retryMessage,
+  editMessage,
   updatePanelLayout,
+  getPanelPresets,
+  savePanelPreset,
+  deletePanelPreset,
   getToken,
   setToken,
   getTokenExpiryMs,
@@ -44,7 +50,27 @@ function withSeenModel(seenModels, provider, model) {
   return [...seenModels, { provider, model }];
 }
 
+// Keeps messages in chronological turn order (stable sort preserves relative
+// order of same-turn entries), needed after retrying/editing an older turn.
+function sortMessages(msgs) {
+  return [...msgs].sort((a, b) => {
+    if (a.turn_number !== b.turn_number) return (a.turn_number || 0) - (b.turn_number || 0);
+    if (a.role !== b.role) return a.role === 'user' ? -1 : 1;
+    return 0;
+  });
+}
+
+const THEME_STORAGE_KEY = 'unifiedui:theme';
+
 export default function App() {
+  // ── Theme ──────────────────────────────────────────────────
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_STORAGE_KEY) || 'dark');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
   // ── Auth state ─────────────────────────────────────────────
   const [authChecked, setAuthChecked] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
@@ -61,10 +87,12 @@ export default function App() {
   const [closedPanels, setClosedPanels] = useState([]); // stash of {provider, model}, most-recently-closed last
   const [isLoading, setIsLoading] = useState(false);
   const [panelErrors, setPanelErrors] = useState({});
+  const [retryingKey, setRetryingKey] = useState(null); // "provider:model:turnNumber"
   const [showSettings, setShowSettings] = useState(false);
   const [configuredProviders, setConfiguredProviders] = useState([]);
   const [modelsByProvider, setModelsByProvider] = useState({});
   const [visionModels, setVisionModels] = useState({});
+  const [presets, setPresets] = useState([]);
   const [attachedImage, setAttachedImage] = useState(null); // { dataUrl, name }
   const [inputValue, setInputValue] = useState('');
   const textareaRef = useRef(null);
@@ -110,6 +138,7 @@ export default function App() {
     setConfiguredProviders([]);
     setModelsByProvider({});
     setVisionModels({});
+    setPresets([]);
     setAttachedImage(null);
     setInputValue('');
   }, []);
@@ -141,6 +170,7 @@ export default function App() {
     loadConfiguredProviders();
     loadAllModels();
     loadVisionModels();
+    loadPanelPresets();
   }, [currentUser]);
 
   // ── Persist the active conversation so a page refresh reopens it ──
@@ -206,6 +236,65 @@ export default function App() {
       setVisionModels(data || {});
     } catch (err) {
       console.error('Failed to load vision models:', err);
+    }
+  };
+
+  const loadPanelPresets = async () => {
+    try {
+      const data = await getPanelPresets();
+      setPresets(data || []);
+    } catch (err) {
+      console.error('Failed to load panel presets:', err);
+    }
+  };
+
+  const handleApplyPreset = (preset) => {
+    let config;
+    try {
+      config = JSON.parse(preset.config);
+    } catch (err) {
+      console.error('Failed to parse preset config:', err);
+      return;
+    }
+    if (!Array.isArray(config) || config.length === 0) return;
+
+    const nextPanels = config.slice(0, MAX_PANELS).map((p) => ({
+      provider: p.provider || '',
+      model: p.model || '',
+      seenModels: p.provider && p.model ? [{ provider: p.provider, model: p.model }] : [],
+      visibleSinceTurn: 0,
+    }));
+    setPanels(nextPanels);
+    setClosedPanels([]);
+    savePanelLayout(activeConvId, nextPanels);
+  };
+
+  const handleSavePreset = async (name) => {
+    try {
+      const config = panels
+        .filter((p) => p.provider && p.model)
+        .map((p) => ({ provider: p.provider, model: p.model }));
+      if (config.length === 0) {
+        alert('Select at least one provider and model before saving a preset.');
+        return;
+      }
+      const saved = await savePanelPreset(name, config);
+      setPresets((prev) => {
+        const withoutOld = prev.filter((p) => p.id !== saved.id);
+        return [...withoutOld, saved];
+      });
+    } catch (err) {
+      console.error('Failed to save preset:', err);
+      alert(`Failed to save preset: ${err.message}`);
+    }
+  };
+
+  const handleDeletePreset = async (id) => {
+    try {
+      await deletePanelPreset(id);
+      setPresets((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      console.error('Failed to delete preset:', err);
     }
   };
 
@@ -386,26 +475,142 @@ export default function App() {
     setIsLoading(true);
     setPanelErrors({});
 
+    const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model }));
+    let turnNumber = null;
+    const streamingIds = {}; // "provider:model" -> temp message id for the in-progress bubble
+
     try {
-      const targets = activePanels.map((p) => ({
-        provider: p.provider,
-        model: p.model,
-      }));
-
-      const result = await sendMessage(convId, msg, targets, imageToSend);
-
-      // Add user message + all responses to local state
-      const newMessages = [result.user_message];
-      for (const resp of result.responses) {
-        if (resp.error) {
+      await sendMessageStream(convId, msg, targets, imageToSend, (event) => {
+        if (event.type === 'start') {
+          turnNumber = event.turn_number;
+          setMessages((prev) => [...prev, event.user_message]);
+        } else if (event.type === 'delta') {
+          const key = `${event.provider}:${event.model}`;
+          setMessages((prev) => {
+            const existingId = streamingIds[key];
+            if (!existingId) {
+              const id = `streaming-${key}-${Date.now()}`;
+              streamingIds[key] = id;
+              return [...prev, {
+                id,
+                conversation_id: convId,
+                turn_number: turnNumber,
+                role: 'assistant',
+                content: event.content,
+                provider: event.provider,
+                model: event.model,
+                created_at: new Date().toISOString(),
+              }];
+            }
+            return prev.map((m) => (m.id === existingId ? { ...m, content: m.content + event.content } : m));
+          });
+        } else if (event.type === 'done') {
+          const key = `${event.provider}:${event.model}`;
+          const existingId = streamingIds[key];
+          setMessages((prev) => prev.map((m) => (m.id === existingId ? {
+            ...m,
+            content: event.content,
+            response_time_ms: event.response_time_ms,
+          } : m)));
+        } else if (event.type === 'error') {
           setPanelErrors((prev) => ({
             ...prev,
-            [`${resp.provider}:${resp.model}`]: resp.error,
+            [`${event.provider}:${event.model}`]: { message: event.error, turnNumber },
           }));
+        } else if (event.type === 'end') {
+          loadConversations();
+        }
+      });
+    } catch (err) {
+      console.error('Send failed:', err);
+      setPanelErrors({ global: err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ── Retry a single panel's response ─────────────────────────
+  const handleRetry = async ({ provider, model, turn_number }) => {
+    if (!activeConvId) return;
+    const key = `${provider}:${model}:${turn_number}`;
+    if (retryingKey) return; // one retry at a time keeps things simple
+    setRetryingKey(key);
+    setPanelErrors((prev) => {
+      const next = { ...prev };
+      delete next[`${provider}:${model}`];
+      return next;
+    });
+
+    try {
+      const resp = await retryMessage(activeConvId, turn_number, provider, model);
+
+      if (resp.error) {
+        setPanelErrors((prev) => ({
+          ...prev,
+          [`${provider}:${model}`]: { message: resp.error, turnNumber: turn_number },
+        }));
+        return;
+      }
+
+      setMessages((prev) => {
+        const idx = prev.findIndex(
+          (m) => m.role === 'assistant' && m.turn_number === turn_number
+            && m.provider === provider && m.model === model
+        );
+        const updated = {
+          id: idx >= 0 ? prev[idx].id : Date.now() + Math.random(),
+          conversation_id: activeConvId,
+          turn_number,
+          role: 'assistant',
+          content: resp.content,
+          provider: resp.provider,
+          model: resp.model,
+          response_time_ms: resp.response_time_ms,
+          token_count: resp.token_count,
+          created_at: new Date().toISOString(),
+        };
+        const next = idx >= 0
+          ? [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)]
+          : [...prev, updated];
+        return sortMessages(next);
+      });
+    } catch (err) {
+      console.error('Retry failed:', err);
+      setPanelErrors((prev) => ({
+        ...prev,
+        [`${provider}:${model}`]: { message: err.message, turnNumber: turn_number },
+      }));
+    } finally {
+      setRetryingKey(null);
+    }
+  };
+
+  // ── Edit + resend a user message ────────────────────────────
+  const handleEditMessage = async (message, newContent) => {
+    if (!activeConvId || isLoading) return;
+
+    const activePanels = panels.filter((p) => p.provider && p.model);
+    if (activePanels.length === 0) {
+      alert('Please select at least one provider and model.');
+      return;
+    }
+
+    setIsLoading(true);
+    setPanelErrors({});
+
+    try {
+      const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model }));
+      const result = await editMessage(activeConvId, message.id, newContent, targets, message.image || null);
+
+      const newMessages = [result.user_message];
+      const newErrors = {};
+      for (const resp of result.responses) {
+        if (resp.error) {
+          newErrors[`${resp.provider}:${resp.model}`] = { message: resp.error, turnNumber: result.turn_number };
         } else {
           newMessages.push({
-            id: Date.now() + Math.random(), // temp ID
-            conversation_id: convId,
+            id: Date.now() + Math.random(),
+            conversation_id: activeConvId,
             turn_number: result.turn_number,
             role: 'assistant',
             content: resp.content,
@@ -418,12 +623,17 @@ export default function App() {
         }
       }
 
-      setMessages((prev) => [...prev, ...newMessages]);
+      // Discard the stale answers/turns that followed the pre-edit question,
+      // then splice in the edited message and its fresh responses.
+      setMessages((prev) => {
+        const kept = prev.filter((m) => m.turn_number < result.turn_number);
+        return sortMessages([...kept, ...newMessages]);
+      });
+      if (Object.keys(newErrors).length > 0) setPanelErrors(newErrors);
 
-      // Reload conversations to get updated title
       loadConversations();
     } catch (err) {
-      console.error('Send failed:', err);
+      console.error('Edit failed:', err);
       setPanelErrors({ global: err.message });
     } finally {
       setIsLoading(false);
@@ -503,14 +713,57 @@ export default function App() {
       <div className="main-content">
         {/* Panel controls */}
         <div className="panel-controls">
-          <span className="panel-controls-label">{panels.length} Panel{panels.length !== 1 ? 's' : ''}</span>
-          <button
-            className="add-panel-btn"
-            onClick={handleAddPanel}
-            disabled={panels.length >= MAX_PANELS}
-          >
-            + Add panel
-          </button>
+          <div className="panel-controls-left">
+            <span className="panel-controls-label">{panels.length} Panel{panels.length !== 1 ? 's' : ''}</span>
+            <button
+              className="add-panel-btn"
+              onClick={handleAddPanel}
+              disabled={panels.length >= MAX_PANELS}
+            >
+              + Add panel
+            </button>
+            <PresetsMenu
+              presets={presets}
+              onApply={handleApplyPreset}
+              onSave={handleSavePreset}
+              onDelete={handleDeletePreset}
+            />
+          </div>
+
+          <div className="panel-controls-right">
+            <div className="theme-toggle">
+              <button
+                type="button"
+                className={`theme-toggle-btn${theme === 'light' ? ' active' : ''}`}
+                onClick={() => setTheme('light')}
+                title="Light mode"
+                id="theme-toggle-light"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4" />
+                  <line x1="12" y1="2" x2="12" y2="4" />
+                  <line x1="12" y1="20" x2="12" y2="22" />
+                  <line x1="4.93" y1="4.93" x2="6.34" y2="6.34" />
+                  <line x1="17.66" y1="17.66" x2="19.07" y2="19.07" />
+                  <line x1="2" y1="12" x2="4" y2="12" />
+                  <line x1="20" y1="12" x2="22" y2="12" />
+                  <line x1="4.93" y1="19.07" x2="6.34" y2="17.66" />
+                  <line x1="17.66" y1="6.34" x2="19.07" y2="4.93" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`theme-toggle-btn${theme === 'dark' ? ' active' : ''}`}
+                onClick={() => setTheme('dark')}
+                title="Dark mode"
+                id="theme-toggle-dark"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Side-by-side comparison */}
@@ -521,11 +774,17 @@ export default function App() {
               panelIndex={i}
               provider={panel.provider}
               model={panel.model}
-              seenModels={panel.seenModels}
+              seenModels={panel.seenModels || []}
               visibleSinceTurn={panel.visibleSinceTurn ?? 0}
               messages={messages}
               isLoading={isLoading}
-              error={panelErrors[`${panel.provider}:${panel.model}`] || (i === 0 ? panelErrors.global : null)}
+              error={
+                panelErrors[`${panel.provider}:${panel.model}`] ||
+                (i === 0 && panelErrors.global ? { message: panelErrors.global, turnNumber: null } : null)
+              }
+              onRetry={handleRetry}
+              retryingKey={retryingKey}
+              onEdit={handleEditMessage}
               modelsByProvider={modelsByProvider}
               onSelect={(provider, model) => handleSelect(i, provider, model)}
               onAddCustomModel={handleAddCustomModel}
