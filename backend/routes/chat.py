@@ -45,9 +45,12 @@ def _build_context_for_target(all_messages: list[Message], provider: str, model:
     context_messages = []
     for msg in all_messages:
         if msg.role == "user":
+            content = msg.content
+            if msg.attached_file_name:
+                content = f"{content}\n\n[Attached file: {msg.attached_file_name}]\n{msg.attached_file_content}"
             entry = {
                 "role": "user",
-                "content": msg.content,
+                "content": content,
                 "turn_number": msg.turn_number,
             }
             if msg.image:
@@ -154,6 +157,8 @@ async def send_message(
         role="user",
         content=req.message,
         image=req.image,
+        attached_file_name=req.attached_file_name,
+        attached_file_content=req.attached_file_content,
     )
     db.add(user_msg)
     await db.flush()
@@ -228,6 +233,8 @@ async def send_message(
         role=user_msg.role,
         content=user_msg.content,
         image=user_msg.image,
+        attached_file_name=user_msg.attached_file_name,
+        attached_file_content=user_msg.attached_file_content,
         created_at=user_msg.created_at,
     )
 
@@ -300,6 +307,8 @@ async def send_message_stream(
         role="user",
         content=req.message,
         image=req.image,
+        attached_file_name=req.attached_file_name,
+        attached_file_content=req.attached_file_content,
     )
     db.add(user_msg)
     await db.flush()
@@ -342,6 +351,8 @@ async def send_message_stream(
         "role": user_msg.role,
         "content": user_msg.content,
         "image": user_msg.image,
+        "attached_file_name": user_msg.attached_file_name,
+        "attached_file_content": user_msg.attached_file_content,
         "created_at": user_msg.created_at.isoformat(),
     }
     should_set_title = conv.title == "New Chat" and turn_number == 1
@@ -520,6 +531,8 @@ async def edit_message(
     turn_number = user_msg.turn_number
     user_msg.content = req.content
     user_msg.image = req.image
+    user_msg.attached_file_name = req.attached_file_name
+    user_msg.attached_file_content = req.attached_file_content
     await db.flush()
 
     # Discard everything built on the pre-edit question: this turn's old
@@ -592,6 +605,8 @@ async def edit_message(
         role=user_msg.role,
         content=user_msg.content,
         image=user_msg.image,
+        attached_file_name=user_msg.attached_file_name,
+        attached_file_content=user_msg.attached_file_content,
         created_at=user_msg.created_at,
     )
 

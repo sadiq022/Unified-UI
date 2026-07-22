@@ -49,6 +49,8 @@ class Message(Base):
     role = Column(String(20), nullable=False)  # "user" or "assistant"
     content = Column(Text, nullable=False)
     image = Column(Text, nullable=True)  # base64 data URL attached to a user message
+    attached_file_name = Column(String(255), nullable=True)  # display name of an attached text document
+    attached_file_content = Column(Text, nullable=True)  # extracted text, truncated to 32k chars
     provider = Column(String(50), nullable=True)  # null for user messages
     model = Column(String(100), nullable=True)    # null for user messages
     response_time_ms = Column(Float, nullable=True)

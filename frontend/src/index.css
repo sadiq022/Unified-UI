@@ -958,6 +958,20 @@ body {
   margin-bottom: 8px;
 }
 
+.message-file-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--user-bubble-text);
+  opacity: 0.8;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  width: fit-content;
+}
+
 .assistant-message-row {
   display: flex;
   align-items: flex-start;
@@ -1270,6 +1284,23 @@ body {
   border-radius: var(--radius-sm);
   padding: 4px 8px 4px 4px;
   flex-shrink: 0;
+}
+
+.attached-file-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.attached-file-chip-loading {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .attached-image-chip img {

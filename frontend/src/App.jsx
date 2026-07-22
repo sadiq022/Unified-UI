@@ -15,6 +15,7 @@ import {
   getModels,
   getVisionModels,
   addCustomModel,
+  extractFileText,
   sendMessageStream,
   retryMessage,
   editMessage,
@@ -94,6 +95,8 @@ export default function App() {
   const [visionModels, setVisionModels] = useState({});
   const [presets, setPresets] = useState([]);
   const [attachedImage, setAttachedImage] = useState(null); // { dataUrl, name }
+  const [attachedFile, setAttachedFile] = useState(null); // { name, content, truncated }
+  const [extractingFile, setExtractingFile] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const textareaRef = useRef(null);
   const activeConvIdRef = useRef(null);
@@ -469,9 +472,12 @@ export default function App() {
     }
 
     const imageToSend = attachedImage?.dataUrl || null;
+    const fileNameToSend = attachedFile?.name || null;
+    const fileContentToSend = attachedFile?.content || null;
 
     setInputValue('');
     setAttachedImage(null);
+    setAttachedFile(null);
     setIsLoading(true);
     setPanelErrors({});
 
@@ -480,7 +486,7 @@ export default function App() {
     const streamingIds = {}; // "provider:model" -> temp message id for the in-progress bubble
 
     try {
-      await sendMessageStream(convId, msg, targets, imageToSend, (event) => {
+      await sendMessageStream(convId, msg, targets, imageToSend, fileNameToSend, fileContentToSend, (event) => {
         if (event.type === 'start') {
           turnNumber = event.turn_number;
           setMessages((prev) => [...prev, event.user_message]);
@@ -600,7 +606,10 @@ export default function App() {
 
     try {
       const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model }));
-      const result = await editMessage(activeConvId, message.id, newContent, targets, message.image || null);
+      const result = await editMessage(
+        activeConvId, message.id, newContent, targets,
+        message.image || null, message.attached_file_name || null, message.attached_file_content || null
+      );
 
       const newMessages = [result.user_message];
       const newErrors = {};
@@ -667,25 +676,56 @@ export default function App() {
     }
   };
 
-  // ── Image attachment ───────────────────────────────────────
+  // ── Attachments (image or text document) ────────────────────
+  const DOCUMENT_EXTENSIONS = [
+    'pdf', 'docx', 'txt', 'md', 'markdown', 'csv', 'json', 'log', 'yaml', 'yml',
+    'py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'ini', 'cfg',
+  ];
+
   const handleAttachClick = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // allow re-selecting the same file later
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAttachedImage({ dataUrl: reader.result, name: file.name });
-    };
-    reader.readAsDataURL(file);
+    if (file.type.startsWith('image/')) {
+      setAttachedFile(null);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setAttachedImage({ dataUrl: reader.result, name: file.name });
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+    if (!DOCUMENT_EXTENSIONS.includes(ext)) {
+      alert(`Unsupported file type: .${ext || 'unknown'}`);
+      return;
+    }
+
+    setAttachedImage(null);
+    setExtractingFile(true);
+    try {
+      const result = await extractFileText(file);
+      setAttachedFile({ name: result.filename, content: result.content, truncated: result.truncated });
+    } catch (err) {
+      console.error('Failed to extract file text:', err);
+      alert(`Failed to read file: ${err.message}`);
+    } finally {
+      setExtractingFile(false);
+    }
   };
 
   const handleRemoveImage = () => {
     setAttachedImage(null);
+  };
+
+  const handleRemoveFile = () => {
+    setAttachedFile(null);
   };
 
   // ── Render ─────────────────────────────────────────────────
@@ -848,7 +888,7 @@ export default function App() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.pdf,.docx,.txt,.md,.csv,.json,.log,.yaml,.yml,.py,.js,.jsx,.ts,.tsx,.html,.css,.xml,.ini,.cfg"
             onChange={handleFileChange}
             style={{ display: 'none' }}
           />
@@ -857,8 +897,9 @@ export default function App() {
               type="button"
               className="attach-btn"
               onClick={handleAttachClick}
-              title="Attach an image"
+              title="Attach an image or document"
               id="attach-btn"
+              disabled={extractingFile}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -870,6 +911,27 @@ export default function App() {
                 <img src={attachedImage.dataUrl} alt={attachedImage.name} />
                 <span className="attached-image-name">{attachedImage.name}</span>
                 <button type="button" className="attached-image-remove" onClick={handleRemoveImage} title="Remove image">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {extractingFile && (
+              <div className="attached-file-chip attached-file-chip-loading">
+                <span className="attached-image-name">Reading file...</span>
+              </div>
+            )}
+
+            {attachedFile && (
+              <div className="attached-file-chip" title={attachedFile.truncated ? 'Truncated to 32,000 characters' : undefined}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+                <span className="attached-image-name">
+                  {attachedFile.name}{attachedFile.truncated ? ' (truncated)' : ''}
+                </span>
+                <button type="button" className="attached-image-remove" onClick={handleRemoveFile} title="Remove file">
                   ✕
                 </button>
               </div>

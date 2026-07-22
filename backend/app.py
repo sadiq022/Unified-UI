@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
-from backend.routes import api_keys, conversations, chat, custom_models, auth, panel_presets
+from backend.routes import api_keys, conversations, chat, custom_models, auth, panel_presets, files
 
 # Path to the built React frontend
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
@@ -41,6 +41,7 @@ app.include_router(conversations.router)
 app.include_router(chat.router)
 app.include_router(custom_models.router)
 app.include_router(panel_presets.router)
+app.include_router(files.router)
 
 # Serve React static files if the build exists
 if os.path.isdir(FRONTEND_DIST):

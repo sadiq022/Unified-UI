@@ -114,6 +114,8 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     image: Optional[str] = None
+    attached_file_name: Optional[str] = None
+    attached_file_content: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     response_time_ms: Optional[float] = None
@@ -136,6 +138,8 @@ class ChatRequest(BaseModel):
     message: str
     targets: list[ChatTarget]  # which models to send to
     image: Optional[str] = None  # base64 data URL, only usable by vision-capable models
+    attached_file_name: Optional[str] = None
+    attached_file_content: Optional[str] = None  # extracted text, any model can read this
 
 
 class ChatResponseItem(BaseModel):
@@ -166,6 +170,8 @@ class EditMessageRequest(BaseModel):
     content: str
     targets: list[ChatTarget]
     image: Optional[str] = None
+    attached_file_name: Optional[str] = None
+    attached_file_content: Optional[str] = None
 
 
 # ── Panel Presets ───────────────────────────────────────────────────────────────
