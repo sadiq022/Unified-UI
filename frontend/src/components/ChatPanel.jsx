@@ -8,6 +8,7 @@ export default function ChatPanel({
   model,
   seenModels,
   visibleSinceTurn,
+  compactions,
   messages,
   isLoading,
   error,
@@ -45,6 +46,11 @@ export default function ChatPanel({
   });
 
   let lastAssistantKey = null;
+  const insertedCompactionDivider = new Set();
+  const compactionByKey = {};
+  for (const c of compactions || []) {
+    compactionByKey[`${c.provider}:${c.model}`] = c.covers_through_turn;
+  }
 
   // With streaming, panels finish at different times — only show "Thinking..."
   // for a panel that hasn't started/finished streaming its own answer yet for
@@ -97,6 +103,20 @@ export default function ChatPanel({
                 );
               }
               lastAssistantKey = key;
+
+              const coversThroughTurn = compactionByKey[key];
+              if (
+                coversThroughTurn !== undefined
+                && msg.turn_number > coversThroughTurn
+                && !insertedCompactionDivider.has(key)
+              ) {
+                insertedCompactionDivider.add(key);
+                elements.push(
+                  <div key={`compaction-${msg.id || i}`} className="model-switch-divider">
+                    <span>Context compacted for this model — earlier turns summarized</span>
+                  </div>
+                );
+              }
             }
             const isRetrying = msg.role === 'assistant'
               && retryingKey === `${msg.provider}:${msg.model}:${msg.turn_number}`;

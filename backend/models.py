@@ -71,6 +71,19 @@ class CustomModel(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class ContextCompaction(Base):
+    __tablename__ = "context_compactions"
+    __table_args__ = (UniqueConstraint("conversation_id", "provider", "model", name="uq_compaction_conv_provider_model"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)
+    model = Column(String(100), nullable=False)
+    summary = Column(Text, nullable=False)
+    covers_through_turn = Column(Integer, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class PanelPreset(Base):
     __tablename__ = "panel_presets"
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_preset_user_name"),)

@@ -85,6 +85,58 @@ VISION_MODELS: dict[str, list[str]] = {
     ],
 }
 
+# Approximate max context window (tokens) per model, used only to decide when to
+# compact conversation history — doesn't need to be exact, just roughly right.
+CONTEXT_LENGTHS: dict[str, int] = {
+    # OpenAI
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4": 8_192,
+    "gpt-3.5-turbo": 16_385,
+    "o1-preview": 128_000,
+    "o1-mini": 128_000,
+    # Anthropic
+    "claude-sonnet-4-20250514": 200_000,
+    "claude-opus-4-20250514": 200_000,
+    "claude-3-5-sonnet-20241022": 200_000,
+    "claude-3-5-haiku-20241022": 200_000,
+    "claude-3-opus-20240229": 200_000,
+    # Gemini
+    "gemini-3.1-flash-lite": 1_000_000,
+    "gemini-3.5-flash": 1_000_000,
+    # Groq
+    "llama-3.3-70b-versatile": 128_000,
+    "llama-3.1-8b-instant": 128_000,
+    "gemma2-9b-it": 8_192,
+    "qwen/qwen3-32b": 32_768,
+    "qwen/qwen3.6-27b": 32_768,
+    "openai/gpt-oss-20b": 128_000,
+    "meta-llama/llama-4-scout-17b-16e-instruct": 128_000,
+    # DeepSeek
+    "deepseek-chat": 64_000,
+    "deepseek-reasoner": 64_000,
+    # OpenRouter (namespaced; varies by underlying model)
+    "openai/gpt-4o": 128_000,
+    "anthropic/claude-sonnet-4-20250514": 200_000,
+    "google/gemini-2.5-pro-preview-05-06": 1_000_000,
+    "meta-llama/llama-3.3-70b-instruct": 128_000,
+    "mistralai/mistral-large-latest": 128_000,
+    # NVIDIA NIM
+    "deepseek-ai/deepseek-v4-pro": 128_000,
+    "deepseek-ai/deepseek-v4-flash": 128_000,
+    "mistralai/mistral-large-3-675b-instruct-2512": 128_000,
+    "mistralai/mistral-small-4-119b-2603": 128_000,
+    "z-ai/glm-5.2": 128_000,
+    "qwen/qwen3.5-397b-a17b": 128_000,
+    "nvidia/nemotron-3-super-120b-a12b": 128_000,
+    # Cerebras
+    "gemma-4-31b": 32_000,
+    "zai-glm-4.7": 128_000,
+    "gpt-oss-120b": 128_000,
+}
+DEFAULT_CONTEXT_LENGTH = 32_000  # fallback for unlisted/custom models
+
 
 def get_provider(name: str) -> BaseProvider:
     """Get a provider adapter by name."""
@@ -107,3 +159,8 @@ def is_vision_model(provider_name: str, model: str) -> bool:
 def get_vision_models() -> dict[str, list[str]]:
     """Get the full map of provider -> vision-capable models."""
     return VISION_MODELS
+
+
+def get_context_length(model: str) -> int:
+    """Approximate max context window (tokens) for a model, with a safe fallback."""
+    return CONTEXT_LENGTHS.get(model, DEFAULT_CONTEXT_LENGTH)

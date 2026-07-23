@@ -7,7 +7,7 @@ class NvidiaProvider(BaseProvider):
 
     BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str) -> dict:
+    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         headers = {
@@ -19,7 +19,7 @@ class NvidiaProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens or 8192,
         }
 
         # NVIDIA-hosted reasoning models (e.g. deepseek-ai/deepseek-v4-pro) can take

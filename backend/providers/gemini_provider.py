@@ -8,7 +8,7 @@ class GeminiProvider(BaseProvider):
 
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str) -> dict:
+    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         # Convert OpenAI-style messages to Gemini format
@@ -51,7 +51,7 @@ class GeminiProvider(BaseProvider):
             "contents": merged,
             "generationConfig": {
                 "temperature": 0.7,
-                "maxOutputTokens": 4096,
+                "maxOutputTokens": max_tokens or 4096,
             },
         }
 

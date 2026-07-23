@@ -7,7 +7,7 @@ class GroqProvider(BaseProvider):
 
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str) -> dict:
+    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         # If the current turn attached an image, convert that user message into
@@ -37,7 +37,7 @@ class GroqProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens or 4096,
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:

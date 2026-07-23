@@ -8,12 +8,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from backend.database import get_db, async_session
-from backend.models import APIKey, Conversation, Message, User
+from backend.models import APIKey, Conversation, ContextCompaction, Message, User
 from backend.schemas import (
     ChatRequest, ChatResponse, ChatResponseItem, MessageResponse, RetryRequest, EditMessageRequest,
+    CompactionResponse,
 )
 from backend.providers import get_provider, is_vision_model
 from backend.auth import get_current_user
+from backend.context_compaction import maybe_compact_context
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
 
@@ -34,7 +36,7 @@ def _strip_think_blocks(content: str) -> str:
     return stripped.strip()
 
 
-def _build_context_for_target(all_messages: list[Message], provider: str, model: str) -> list[dict]:
+def _build_raw_context(all_messages: list[Message], provider: str, model: str) -> list[dict]:
     """
     Build conversation context for one specific model: every user turn, this model's
     own past answers presented as genuine assistant turns, and every OTHER model's
@@ -68,6 +70,28 @@ def _build_context_for_target(all_messages: list[Message], provider: str, model:
                 "turn_number": msg.turn_number,
             })
     return context_messages
+
+
+async def _build_context_for_target(
+    db: AsyncSession,
+    conversation_id: int,
+    all_messages: list[Message],
+    provider: str,
+    model: str,
+    api_key: str,
+) -> list[dict]:
+    """
+    Same as _build_raw_context, but compacts older turns into a cached summary
+    once this target's estimated usage crosses its context-window threshold.
+    """
+    context_messages = _build_raw_context(all_messages, provider, model)
+    summary, kept = await maybe_compact_context(db, conversation_id, provider, model, api_key, context_messages)
+    if summary:
+        kept = [{
+            "role": "system",
+            "content": f"[Conversation summary — earlier turns compacted]\n{summary}",
+        }] + kept
+    return kept
 
 
 async def _call_model(provider_name: str, model: str, api_key: str, messages: list[dict]) -> ChatResponseItem:
@@ -189,8 +213,14 @@ async def send_message(
                 )
             api_keys[target.provider] = key_obj.api_key
 
-    # Call all models concurrently, each with its own context (its own past answers only).
+    # Call all models concurrently, each with its own (possibly compacted) context.
     # A target that can't handle the attached image gets a friendly error instead of a wasted API call.
+    contexts = {
+        target.provider + "|" + target.model: await _build_context_for_target(
+            db, req.conversation_id, all_messages, target.provider, target.model, api_keys[target.provider]
+        )
+        for target in req.targets
+    }
     tasks = [
         _vision_unsupported_response(target.provider, target.model)
         if req.image and not is_vision_model(target.provider, target.model)
@@ -198,7 +228,7 @@ async def send_message(
             target.provider,
             target.model,
             api_keys[target.provider],
-            _build_context_for_target(all_messages, target.provider, target.model),
+            contexts[target.provider + "|" + target.model],
         )
         for target in req.targets
     ]
@@ -340,7 +370,11 @@ async def send_message_stream(
     # Everything the generator needs, captured as plain data — the `db` session
     # injected above is torn down once this function returns, before the
     # streamed body actually runs, so it can't be used inside the generator.
-    context_by_target = [_build_context_for_target(all_messages, t.provider, t.model) for t in req.targets]
+    # Compaction (which needs the DB) must happen here, before that teardown.
+    context_by_target = [
+        await _build_context_for_target(db, req.conversation_id, all_messages, t.provider, t.model, api_keys[t.provider])
+        for t in req.targets
+    ]
     targets = list(req.targets)
     conversation_id = req.conversation_id
     image = req.image
@@ -473,7 +507,9 @@ async def retry_message(
         m for m in all_messages
         if m.turn_number <= req.turn_number and m is not existing_assistant
     ]
-    context_messages = _build_context_for_target(context_source, req.provider, req.model)
+    context_messages = await _build_context_for_target(
+        db, req.conversation_id, context_source, req.provider, req.model, key_obj.api_key
+    )
 
     if user_msg_for_turn.image and not is_vision_model(req.provider, req.model):
         return await _vision_unsupported_response(req.provider, req.model)
@@ -569,6 +605,12 @@ async def edit_message(
                 )
             api_keys[target.provider] = key_obj.api_key
 
+    contexts = {
+        target.provider + "|" + target.model: await _build_context_for_target(
+            db, req.conversation_id, all_messages, target.provider, target.model, api_keys[target.provider]
+        )
+        for target in req.targets
+    }
     tasks = [
         _vision_unsupported_response(target.provider, target.model)
         if req.image and not is_vision_model(target.provider, target.model)
@@ -576,7 +618,7 @@ async def edit_message(
             target.provider,
             target.model,
             api_keys[target.provider],
-            _build_context_for_target(all_messages, target.provider, target.model),
+            contexts[target.provider + "|" + target.model],
         )
         for target in req.targets
     ]
@@ -639,3 +681,28 @@ async def get_history(
     )
     messages = result.scalars().all()
     return messages
+
+
+@router.get("/compactions/{conversation_id}", response_model=list[CompactionResponse])
+async def get_compactions(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Which (provider, model) targets in this conversation have had their history
+    compacted, and up through which turn — used by the frontend to place a
+    "context compacted" divider in each affected panel.
+    """
+    conv_result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conversation_id, Conversation.user_id == current_user.id
+        )
+    )
+    if not conv_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    result = await db.execute(
+        select(ContextCompaction).where(ContextCompaction.conversation_id == conversation_id)
+    )
+    return result.scalars().all()

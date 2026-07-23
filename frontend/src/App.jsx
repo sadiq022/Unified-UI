@@ -11,6 +11,7 @@ import {
   createConversation,
   deleteConversation,
   getHistory,
+  getCompactions,
   getApiKeys,
   getModels,
   getVisionModels,
@@ -98,6 +99,7 @@ export default function App() {
   const [attachedFile, setAttachedFile] = useState(null); // { name, content, truncated }
   const [extractingFile, setExtractingFile] = useState(false);
   const [inputValue, setInputValue] = useState('');
+  const [compactions, setCompactions] = useState([]); // [{provider, model, covers_through_turn}]
   const textareaRef = useRef(null);
   const activeConvIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -310,6 +312,18 @@ export default function App() {
     });
   };
 
+  // Refetches which (provider, model) targets have compacted history for the
+  // active conversation, so panels can show a "context compacted" divider.
+  const refreshCompactions = async (convId) => {
+    if (!convId) return;
+    try {
+      const data = await getCompactions(convId);
+      if (activeConvIdRef.current === convId) setCompactions(data);
+    } catch (err) {
+      console.error('Failed to load compactions:', err);
+    }
+  };
+
   const loadHistory = async (convId) => {
     try {
       const [data, conv] = await Promise.all([
@@ -323,6 +337,7 @@ export default function App() {
 
       setMessages(data);
       setClosedPanels([]);
+      refreshCompactions(convId);
 
       // Restore the exact panel layout the user last configured for this
       // conversation (added/removed panels, model choices) if one was saved.
@@ -387,6 +402,7 @@ export default function App() {
       setMessages([]);
       setPanelErrors({});
       setClosedPanels([]);
+      setCompactions([]);
     } catch (err) {
       console.error('Failed to create conversation:', err);
     }
@@ -525,6 +541,7 @@ export default function App() {
           }));
         } else if (event.type === 'end') {
           loadConversations();
+          refreshCompactions(convId);
         }
       });
     } catch (err) {
@@ -580,6 +597,7 @@ export default function App() {
           : [...prev, updated];
         return sortMessages(next);
       });
+      refreshCompactions(activeConvId);
     } catch (err) {
       console.error('Retry failed:', err);
       setPanelErrors((prev) => ({
@@ -641,6 +659,7 @@ export default function App() {
       if (Object.keys(newErrors).length > 0) setPanelErrors(newErrors);
 
       loadConversations();
+      refreshCompactions(activeConvId);
     } catch (err) {
       console.error('Edit failed:', err);
       setPanelErrors({ global: err.message });
@@ -816,6 +835,7 @@ export default function App() {
               model={panel.model}
               seenModels={panel.seenModels || []}
               visibleSinceTurn={panel.visibleSinceTurn ?? 0}
+              compactions={compactions}
               messages={messages}
               isLoading={isLoading}
               error={

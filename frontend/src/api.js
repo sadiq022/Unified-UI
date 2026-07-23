@@ -186,6 +186,8 @@ export async function sendMessageStream(
 
 export const getHistory = (conversation_id) =>
   request(`/api/chat/history/${conversation_id}`);
+export const getCompactions = (conversation_id) =>
+  request(`/api/chat/compactions/${conversation_id}`);
 export const retryMessage = (conversation_id, turn_number, provider, model) =>
   request('/api/chat/retry', {
     method: 'POST',

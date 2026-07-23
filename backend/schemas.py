@@ -174,6 +174,17 @@ class EditMessageRequest(BaseModel):
     attached_file_content: Optional[str] = None
 
 
+# ── Context Compaction ───────────────────────────────────────────────────────────
+
+class CompactionResponse(BaseModel):
+    provider: str
+    model: str
+    covers_through_turn: int
+
+    class Config:
+        from_attributes = True
+
+
 # ── Panel Presets ───────────────────────────────────────────────────────────────
 
 class PanelPresetCreate(BaseModel):

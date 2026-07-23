@@ -8,7 +8,7 @@ class BaseProvider(ABC):
     """Abstract base class for all LLM provider adapters."""
 
     @abstractmethod
-    async def chat(self, messages: list[dict], model: str, api_key: str) -> dict:
+    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
         """
         Send a chat request to the provider.
 
@@ -16,6 +16,8 @@ class BaseProvider(ABC):
             messages: List of {"role": str, "content": str} dicts with turn markers.
             model: Model identifier string.
             api_key: The API key for authentication.
+            max_tokens: Override the provider's default response length cap
+                (used e.g. by context compaction to keep summaries short).
 
         Returns:
             {

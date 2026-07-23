@@ -8,7 +8,7 @@ class AnthropicProvider(BaseProvider):
 
     BASE_URL = "https://api.anthropic.com/v1/messages"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str) -> dict:
+    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         # Anthropic requires system message to be separate
@@ -40,7 +40,7 @@ class AnthropicProvider(BaseProvider):
 
         payload = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens or 4096,
             "messages": merged,
         }
         if system_content.strip():
