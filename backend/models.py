@@ -53,6 +53,12 @@ class Message(Base):
     attached_file_content = Column(Text, nullable=True)  # extracted text, truncated to 32k chars
     provider = Column(String(50), nullable=True)  # null for user messages
     model = Column(String(100), nullable=True)    # null for user messages
+    # Which frontend panel this assistant answer belongs to (null for user messages
+    # and for messages saved before this column existed). Needed because two
+    # panels can share the same provider+model — matching on provider/model alone
+    # let one panel's history "absorb" another panel's later answers once both
+    # had used the same model at some point.
+    panel_id = Column(String(64), nullable=True)
     response_time_ms = Column(Float, nullable=True)
     token_count = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

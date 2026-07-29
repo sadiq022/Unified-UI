@@ -4,7 +4,7 @@ from sqlalchemy import select, delete
 from backend.database import get_db
 from backend.models import APIKey, CustomModel, User
 from backend.schemas import APIKeyCreate, APIKeyResponse
-from backend.providers import get_models, get_vision_models
+from backend.providers import get_models, get_vision_models, get_provider, is_known_provider
 from backend.auth import get_current_user
 
 router = APIRouter(prefix="/api/keys", tags=["API Keys"])
@@ -98,8 +98,7 @@ async def list_models(
     current_user: User = Depends(get_current_user),
 ):
     """Get available models for a provider (built-in defaults plus the user's own custom models)."""
-    models = get_models(provider)
-    if not models:
+    if not is_known_provider(provider):
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
 
     custom_result = await db.execute(
@@ -107,6 +106,26 @@ async def list_models(
         .where(CustomModel.user_id == current_user.id, CustomModel.provider == provider)
         .order_by(CustomModel.created_at)
     )
-    custom_models = [m for m in custom_result.scalars().all() if m not in models]
+    custom_models = custom_result.scalars().all()
 
-    return {"provider": provider, "models": models + custom_models}
+    if provider.lower() == "local":
+        # A local server's model list isn't fixed like a hosted provider's — ask
+        # it directly what's loaded right now, instead of relying on the user to
+        # type it in as a custom model. Falls back to just custom models (e.g.
+        # while the server is off) if the live request fails.
+        key_result = await db.execute(
+            select(APIKey).where(APIKey.user_id == current_user.id, APIKey.provider == "local")
+        )
+        key_obj = key_result.scalar_one_or_none()
+        live_models = []
+        if key_obj:
+            try:
+                live_models = await get_provider("local").list_models(key_obj.api_key)
+            except Exception:
+                live_models = []
+        combined = live_models + [m for m in custom_models if m not in live_models]
+        return {"provider": provider, "models": combined}
+
+    models = get_models(provider)
+    combined = models + [m for m in custom_models if m not in models]
+    return {"provider": provider, "models": combined}

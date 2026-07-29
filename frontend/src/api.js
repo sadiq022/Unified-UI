@@ -188,10 +188,10 @@ export const getHistory = (conversation_id) =>
   request(`/api/chat/history/${conversation_id}`);
 export const getCompactions = (conversation_id) =>
   request(`/api/chat/compactions/${conversation_id}`);
-export const retryMessage = (conversation_id, turn_number, provider, model) =>
+export const retryMessage = (conversation_id, turn_number, provider, model, panel_id = null) =>
   request('/api/chat/retry', {
     method: 'POST',
-    body: JSON.stringify({ conversation_id, turn_number, provider, model }),
+    body: JSON.stringify({ conversation_id, turn_number, provider, model, panel_id }),
   });
 export const editMessage = (
   conversation_id, message_id, content, targets, image = null, attachedFileName = null, attachedFileContent = null

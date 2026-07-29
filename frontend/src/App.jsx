@@ -34,9 +34,17 @@ import {
 const MAX_PANELS = 4;
 const ACTIVE_CONV_STORAGE_KEY = 'unifiedui:activeConvId';
 const DEFAULT_PANELS = [
-  { provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
-  { provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
+  { panel_id: 'panel-a', provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
+  { panel_id: 'panel-b', provider: '', model: '', seenModels: [], visibleSinceTurn: 0 },
 ];
+
+// A stable identity for a panel, independent of its array position — needed
+// because two panels can end up targeting the same provider+model, and
+// messages must be attributed to the panel that actually asked for them, not
+// just matched by (provider, model), which is ambiguous once that overlap happens.
+function makePanelId() {
+  return `panel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 const EXAMPLE_PROMPTS = [
   'Explain quantum computing in simple terms',
@@ -235,6 +243,14 @@ export default function App() {
     }
   };
 
+  // Re-fetches the model list whenever configured keys change — needed for the
+  // "local" provider, whose model list comes live from the server rather than
+  // a fixed default list, so saving/updating its base URL should refresh it.
+  const handleKeysChange = (providers) => {
+    setConfiguredProviders(providers);
+    loadAllModels();
+  };
+
   const loadVisionModels = async () => {
     try {
       const data = await getVisionModels();
@@ -264,6 +280,7 @@ export default function App() {
     if (!Array.isArray(config) || config.length === 0) return;
 
     const nextPanels = config.slice(0, MAX_PANELS).map((p) => ({
+      panel_id: makePanelId(),
       provider: p.provider || '',
       model: p.model || '',
       seenModels: p.provider && p.model ? [{ provider: p.provider, model: p.model }] : [],
@@ -345,7 +362,17 @@ export default function App() {
         try {
           const savedPanels = JSON.parse(conv.panel_layout);
           if (Array.isArray(savedPanels) && savedPanels.length > 0) {
-            setPanels(savedPanels);
+            // Backfill a panel_id for layouts saved before panel identity existed,
+            // so this conversation starts getting correctly-attributed messages
+            // from its very next turn instead of only new conversations.
+            let backfilled = false;
+            const withIds = savedPanels.map((p) => {
+              if (p.panel_id) return p;
+              backfilled = true;
+              return { ...p, panel_id: makePanelId() };
+            });
+            setPanels(withIds);
+            if (backfilled) savePanelLayout(convId, withIds);
             return;
           }
         } catch (err) {
@@ -365,6 +392,7 @@ export default function App() {
             if (!seen.has(key)) {
               seen.add(key);
               uniquePanels.push({
+                panel_id: makePanelId(),
                 provider: msg.provider,
                 model: msg.model,
                 seenModels: [{ provider: msg.provider, model: msg.model }],
@@ -376,7 +404,12 @@ export default function App() {
         }
 
         if (uniquePanels.length > 0) {
-          setPanels(uniquePanels.reverse());
+          const reconstructed = uniquePanels.reverse();
+          setPanels(reconstructed);
+          // Persist it so this reconstruction (and the panel_ids it just minted)
+          // only happens once — future loads restore this exact layout instead
+          // of re-deriving fresh (and different) panel_ids from history each time.
+          savePanelLayout(convId, reconstructed);
         }
       }
     } catch (err) {
@@ -437,7 +470,7 @@ export default function App() {
       const currentMaxTurn = messages.reduce((max, m) => Math.max(max, m.turn_number || 0), 0);
       nextPanels = [
         ...panels,
-        { provider: '', model: '', seenModels: [], visibleSinceTurn: currentMaxTurn },
+        { panel_id: makePanelId(), provider: '', model: '', seenModels: [], visibleSinceTurn: currentMaxTurn },
       ];
     }
     setPanels(nextPanels);
@@ -497,9 +530,9 @@ export default function App() {
     setIsLoading(true);
     setPanelErrors({});
 
-    const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model }));
+    const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model, panel_id: p.panel_id }));
     let turnNumber = null;
-    const streamingIds = {}; // "provider:model" -> temp message id for the in-progress bubble
+    const streamingIds = {}; // panel_id -> temp message id for the in-progress bubble
 
     try {
       await sendMessageStream(convId, msg, targets, imageToSend, fileNameToSend, fileContentToSend, (event) => {
@@ -507,7 +540,7 @@ export default function App() {
           turnNumber = event.turn_number;
           setMessages((prev) => [...prev, event.user_message]);
         } else if (event.type === 'delta') {
-          const key = `${event.provider}:${event.model}`;
+          const key = event.panel_id;
           setMessages((prev) => {
             const existingId = streamingIds[key];
             if (!existingId) {
@@ -521,13 +554,14 @@ export default function App() {
                 content: event.content,
                 provider: event.provider,
                 model: event.model,
+                panel_id: event.panel_id,
                 created_at: new Date().toISOString(),
               }];
             }
             return prev.map((m) => (m.id === existingId ? { ...m, content: m.content + event.content } : m));
           });
         } else if (event.type === 'done') {
-          const key = `${event.provider}:${event.model}`;
+          const key = event.panel_id;
           const existingId = streamingIds[key];
           setMessages((prev) => prev.map((m) => (m.id === existingId ? {
             ...m,
@@ -537,7 +571,7 @@ export default function App() {
         } else if (event.type === 'error') {
           setPanelErrors((prev) => ({
             ...prev,
-            [`${event.provider}:${event.model}`]: { message: event.error, turnNumber },
+            [event.panel_id]: { message: event.error, turnNumber },
           }));
         } else if (event.type === 'end') {
           loadConversations();
@@ -553,24 +587,24 @@ export default function App() {
   };
 
   // ── Retry a single panel's response ─────────────────────────
-  const handleRetry = async ({ provider, model, turn_number }) => {
+  const handleRetry = async ({ provider, model, turn_number, panel_id }) => {
     if (!activeConvId) return;
-    const key = `${provider}:${model}:${turn_number}`;
+    const key = `${panel_id}:${turn_number}`;
     if (retryingKey) return; // one retry at a time keeps things simple
     setRetryingKey(key);
     setPanelErrors((prev) => {
       const next = { ...prev };
-      delete next[`${provider}:${model}`];
+      delete next[panel_id];
       return next;
     });
 
     try {
-      const resp = await retryMessage(activeConvId, turn_number, provider, model);
+      const resp = await retryMessage(activeConvId, turn_number, provider, model, panel_id);
 
       if (resp.error) {
         setPanelErrors((prev) => ({
           ...prev,
-          [`${provider}:${model}`]: { message: resp.error, turnNumber: turn_number },
+          [panel_id]: { message: resp.error, turnNumber: turn_number },
         }));
         return;
       }
@@ -578,7 +612,7 @@ export default function App() {
       setMessages((prev) => {
         const idx = prev.findIndex(
           (m) => m.role === 'assistant' && m.turn_number === turn_number
-            && m.provider === provider && m.model === model
+            && (panel_id ? m.panel_id === panel_id : m.provider === provider && m.model === model)
         );
         const updated = {
           id: idx >= 0 ? prev[idx].id : Date.now() + Math.random(),
@@ -588,6 +622,7 @@ export default function App() {
           content: resp.content,
           provider: resp.provider,
           model: resp.model,
+          panel_id: resp.panel_id,
           response_time_ms: resp.response_time_ms,
           token_count: resp.token_count,
           created_at: new Date().toISOString(),
@@ -602,7 +637,7 @@ export default function App() {
       console.error('Retry failed:', err);
       setPanelErrors((prev) => ({
         ...prev,
-        [`${provider}:${model}`]: { message: err.message, turnNumber: turn_number },
+        [panel_id]: { message: err.message, turnNumber: turn_number },
       }));
     } finally {
       setRetryingKey(null);
@@ -623,7 +658,7 @@ export default function App() {
     setPanelErrors({});
 
     try {
-      const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model }));
+      const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model, panel_id: p.panel_id }));
       const result = await editMessage(
         activeConvId, message.id, newContent, targets,
         message.image || null, message.attached_file_name || null, message.attached_file_content || null
@@ -633,7 +668,7 @@ export default function App() {
       const newErrors = {};
       for (const resp of result.responses) {
         if (resp.error) {
-          newErrors[`${resp.provider}:${resp.model}`] = { message: resp.error, turnNumber: result.turn_number };
+          newErrors[resp.panel_id] = { message: resp.error, turnNumber: result.turn_number };
         } else {
           newMessages.push({
             id: Date.now() + Math.random(),
@@ -643,6 +678,7 @@ export default function App() {
             content: resp.content,
             provider: resp.provider,
             model: resp.model,
+            panel_id: resp.panel_id,
             response_time_ms: resp.response_time_ms,
             token_count: resp.token_count,
             created_at: new Date().toISOString(),
@@ -829,8 +865,9 @@ export default function App() {
         <div className={`comparison-view${showWelcome ? ' comparison-view-collapsed' : ''}`}>
           {panels.map((panel, i) => (
             <ChatPanel
-              key={i}
+              key={panel.panel_id || i}
               panelIndex={i}
+              panelId={panel.panel_id}
               provider={panel.provider}
               model={panel.model}
               seenModels={panel.seenModels || []}
@@ -839,7 +876,7 @@ export default function App() {
               messages={messages}
               isLoading={isLoading}
               error={
-                panelErrors[`${panel.provider}:${panel.model}`] ||
+                panelErrors[panel.panel_id] ||
                 (i === 0 && panelErrors.global ? { message: panelErrors.global, turnNumber: null } : null)
               }
               onRetry={handleRetry}
@@ -984,7 +1021,7 @@ export default function App() {
       <ApiKeyManager
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
-        onKeysChange={setConfiguredProviders}
+        onKeysChange={handleKeysChange}
       />
     </div>
   );

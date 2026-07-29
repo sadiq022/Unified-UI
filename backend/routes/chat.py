@@ -94,7 +94,9 @@ async def _build_context_for_target(
     return kept
 
 
-async def _call_model(provider_name: str, model: str, api_key: str, messages: list[dict]) -> ChatResponseItem:
+async def _call_model(
+    provider_name: str, model: str, api_key: str, messages: list[dict], panel_id: str | None = None
+) -> ChatResponseItem:
     """Call a single model and return the response with timing."""
     start = time.time()
     try:
@@ -105,6 +107,7 @@ async def _call_model(provider_name: str, model: str, api_key: str, messages: li
         return ChatResponseItem(
             provider=provider_name,
             model=model,
+            panel_id=panel_id,
             content=_strip_think_blocks(_strip_turn_prefix(result["content"])),
             response_time_ms=round(elapsed_ms, 1),
             token_count=result.get("token_count"),
@@ -125,17 +128,19 @@ async def _call_model(provider_name: str, model: str, api_key: str, messages: li
         return ChatResponseItem(
             provider=provider_name,
             model=model,
+            panel_id=panel_id,
             content="",
             response_time_ms=round(elapsed_ms, 1),
             error=error_detail,
         )
 
 
-async def _vision_unsupported_response(provider_name: str, model: str) -> ChatResponseItem:
+async def _vision_unsupported_response(provider_name: str, model: str, panel_id: str | None = None) -> ChatResponseItem:
     """Placeholder response for a target that can't handle the attached image."""
     return ChatResponseItem(
         provider=provider_name,
         model=model,
+        panel_id=panel_id,
         content="",
         response_time_ms=0.0,
         error=(
@@ -222,13 +227,14 @@ async def send_message(
         for target in req.targets
     }
     tasks = [
-        _vision_unsupported_response(target.provider, target.model)
+        _vision_unsupported_response(target.provider, target.model, target.panel_id)
         if req.image and not is_vision_model(target.provider, target.model)
         else _call_model(
             target.provider,
             target.model,
             api_keys[target.provider],
             contexts[target.provider + "|" + target.model],
+            target.panel_id,
         )
         for target in req.targets
     ]
@@ -244,6 +250,7 @@ async def send_message(
                 content=resp.content,
                 provider=resp.provider,
                 model=resp.model,
+                panel_id=resp.panel_id,
                 response_time_ms=resp.response_time_ms,
                 token_count=resp.token_count,
             )
@@ -275,7 +282,10 @@ async def send_message(
     )
 
 
-async def _stream_target(queue: asyncio.Queue, idx: int, provider_name: str, model: str, api_key: str, messages: list[dict]):
+async def _stream_target(
+    queue: asyncio.Queue, idx: int, provider_name: str, model: str, api_key: str, messages: list[dict],
+    panel_id: str | None = None,
+):
     """Stream one model's response, pushing delta/done/error events onto the shared queue."""
     start = time.time()
     accumulated = ""
@@ -283,11 +293,14 @@ async def _stream_target(queue: asyncio.Queue, idx: int, provider_name: str, mod
         provider = get_provider(provider_name)
         async for delta in provider.chat_stream(messages, model, api_key):
             accumulated += delta
-            await queue.put({"idx": idx, "provider": provider_name, "model": model, "type": "delta", "content": delta})
+            await queue.put({
+                "idx": idx, "provider": provider_name, "model": model, "panel_id": panel_id,
+                "type": "delta", "content": delta,
+            })
         elapsed_ms = round((time.time() - start) * 1000, 1)
         cleaned = _strip_think_blocks(_strip_turn_prefix(accumulated))
         await queue.put({
-            "idx": idx, "provider": provider_name, "model": model, "type": "done",
+            "idx": idx, "provider": provider_name, "model": model, "panel_id": panel_id, "type": "done",
             "content": cleaned, "response_time_ms": elapsed_ms,
         })
     except Exception as e:
@@ -301,7 +314,7 @@ async def _stream_target(queue: asyncio.Queue, idx: int, provider_name: str, mod
         if not error_detail:
             error_detail = f"{type(e).__name__} after {elapsed_ms / 1000:.1f}s"
         await queue.put({
-            "idx": idx, "provider": provider_name, "model": model, "type": "error",
+            "idx": idx, "provider": provider_name, "model": model, "panel_id": panel_id, "type": "error",
             "error": error_detail, "response_time_ms": elapsed_ms,
         })
 
@@ -400,7 +413,8 @@ async def send_message_stream(
         for idx, target in enumerate(targets):
             if image and not is_vision_model(target.provider, target.model):
                 await queue.put({
-                    "idx": idx, "provider": target.provider, "model": target.model, "type": "error",
+                    "idx": idx, "provider": target.provider, "model": target.model, "panel_id": target.panel_id,
+                    "type": "error",
                     "error": (
                         "This model doesn't support image input. Use a vision-capable model "
                         "(e.g. Groq's qwen/qwen3.6-27b or meta-llama/llama-4-scout-17b-16e-instruct)."
@@ -409,7 +423,10 @@ async def send_message_stream(
                 })
                 continue
             tasks.append(asyncio.create_task(
-                _stream_target(queue, idx, target.provider, target.model, api_keys[target.provider], context_by_target[idx])
+                _stream_target(
+                    queue, idx, target.provider, target.model, api_keys[target.provider], context_by_target[idx],
+                    target.panel_id,
+                )
             ))
 
         remaining = len(targets)
@@ -435,6 +452,7 @@ async def send_message_stream(
                     content=item["content"],
                     provider=item["provider"],
                     model=item["model"],
+                    panel_id=item.get("panel_id"),
                     response_time_ms=item["response_time_ms"],
                 ))
             if should_set_title:
@@ -491,16 +509,19 @@ async def retry_message(
     if not user_msg_for_turn:
         raise HTTPException(status_code=404, detail="That turn no longer exists")
 
-    existing_assistant = next(
-        (
-            m for m in all_messages
-            if m.role == "assistant"
-            and m.turn_number == req.turn_number
-            and m.provider == req.provider
-            and m.model == req.model
-        ),
-        None,
-    )
+    # Prefer matching by panel identity — provider+model alone is ambiguous once
+    # two panels have used the same model. Falls back to provider+model for
+    # messages saved before panel_id existed, or if the caller doesn't send one.
+    candidates = [
+        m for m in all_messages
+        if m.role == "assistant" and m.turn_number == req.turn_number
+        and m.provider == req.provider and m.model == req.model
+    ]
+    if req.panel_id:
+        existing_assistant = next((m for m in candidates if m.panel_id == req.panel_id), None) \
+            or next((m for m in candidates if not m.panel_id), None)
+    else:
+        existing_assistant = candidates[0] if candidates else None
 
     # Context as of this turn only — excluding the stale answer we're about to replace.
     context_source = [
@@ -512,13 +533,14 @@ async def retry_message(
     )
 
     if user_msg_for_turn.image and not is_vision_model(req.provider, req.model):
-        return await _vision_unsupported_response(req.provider, req.model)
+        return await _vision_unsupported_response(req.provider, req.model, req.panel_id)
 
-    resp = await _call_model(req.provider, req.model, key_obj.api_key, context_messages)
+    resp = await _call_model(req.provider, req.model, key_obj.api_key, context_messages, req.panel_id)
 
     if not resp.error:
         if existing_assistant:
             existing_assistant.content = resp.content
+            existing_assistant.panel_id = req.panel_id or existing_assistant.panel_id
             existing_assistant.response_time_ms = resp.response_time_ms
             existing_assistant.token_count = resp.token_count
         else:
@@ -528,6 +550,7 @@ async def retry_message(
                 role="assistant",
                 provider=req.provider,
                 model=req.model,
+                panel_id=req.panel_id,
                 content=resp.content,
                 response_time_ms=resp.response_time_ms,
                 token_count=resp.token_count,
@@ -612,13 +635,14 @@ async def edit_message(
         for target in req.targets
     }
     tasks = [
-        _vision_unsupported_response(target.provider, target.model)
+        _vision_unsupported_response(target.provider, target.model, target.panel_id)
         if req.image and not is_vision_model(target.provider, target.model)
         else _call_model(
             target.provider,
             target.model,
             api_keys[target.provider],
             contexts[target.provider + "|" + target.model],
+            target.panel_id,
         )
         for target in req.targets
     ]
@@ -633,6 +657,7 @@ async def edit_message(
                 content=resp.content,
                 provider=resp.provider,
                 model=resp.model,
+                panel_id=resp.panel_id,
                 response_time_ms=resp.response_time_ms,
                 token_count=resp.token_count,
             ))

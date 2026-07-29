@@ -7,6 +7,7 @@ from backend.providers.deepseek_provider import DeepSeekProvider
 from backend.providers.openrouter_provider import OpenRouterProvider
 from backend.providers.nvidia_provider import NvidiaProvider
 from backend.providers.cerebras_provider import CerebrasProvider
+from backend.providers.local_provider import LocalProvider
 
 PROVIDERS: dict[str, BaseProvider] = {
     "openai": OpenAIProvider(),
@@ -17,6 +18,7 @@ PROVIDERS: dict[str, BaseProvider] = {
     "openrouter": OpenRouterProvider(),
     "nvidia": NvidiaProvider(),
     "cerebras": CerebrasProvider(),
+    "local": LocalProvider(),
 }
 
 # Hardcoded model lists per provider (used as defaults; OpenRouter fetches dynamically)
@@ -75,6 +77,9 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "zai-glm-4.7",
         "gpt-oss-120b",
     ],
+    # No fixed model list — whatever's loaded on the user's local server gets
+    # added as a custom model instead (its name is up to the user/server).
+    "local": [],
 }
 
 # Models that accept image input. None of the other listed models support vision.
@@ -144,6 +149,12 @@ def get_provider(name: str) -> BaseProvider:
     if not provider:
         raise ValueError(f"Unknown provider: {name}. Available: {list(PROVIDERS.keys())}")
     return provider
+
+
+def is_known_provider(provider_name: str) -> bool:
+    """Whether this is a registered provider — unlike an empty model list, an
+    unregistered name is a real 404, not just 'nothing configured yet'."""
+    return provider_name.lower() in PROVIDERS
 
 
 def get_models(provider_name: str) -> list[str]:

@@ -10,6 +10,7 @@ const PROVIDERS = [
   { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-...' },
   { id: 'nvidia', name: 'NVIDIA', placeholder: 'nvapi-...' },
   { id: 'cerebras', name: 'Cerebras', placeholder: 'csk-...' },
+  { id: 'local', name: 'Local', placeholder: 'http://localhost:8000', isUrl: true },
 ];
 
 export default function ApiKeyManager({ isOpen, onClose, onKeysChange }) {
@@ -85,9 +86,15 @@ export default function ApiKeyManager({ isOpen, onClose, onKeysChange }) {
                   </span>
                 </div>
 
+                {p.isUrl && (
+                  <div className="api-key-row-hint">
+                    Address of your local OpenAI-compatible server (no key needed)
+                  </div>
+                )}
+
                 <div className="api-key-input-row">
                   <input
-                    type="password"
+                    type={p.isUrl ? 'text' : 'password'}
                     className="api-key-input"
                     placeholder={p.placeholder}
                     value={inputs[p.id] || ''}

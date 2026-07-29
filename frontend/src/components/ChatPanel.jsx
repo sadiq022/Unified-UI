@@ -4,6 +4,7 @@ import MessageBubble from './MessageBubble.jsx';
 
 export default function ChatPanel({
   panelIndex,
+  panelId,
   provider,
   model,
   seenModels,
@@ -31,15 +32,17 @@ export default function ChatPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  // Show user messages, and assistant replies from any model this panel has ever
-  // used — switching models never makes prior answers vanish. A divider is
-  // inserted wherever the model actually changes so the switch is visible
-  // instead of looking like an unexplained mix of answers.
-  // A panel added mid-conversation never shows turns that predate it joining.
+  // Show user messages, and assistant replies that belong to this panel. Each
+  // assistant message is tagged with the panel_id of whoever requested it, so
+  // this matches on identity, not just (provider, model) — two panels can share
+  // the same model without one absorbing the other's answers. Older messages
+  // saved before panel identity existed have no panel_id, so they fall back to
+  // the previous "any model this panel has ever used" heuristic.
   const filteredMessages = messages.filter((msg) => {
     if ((msg.turn_number || 0) <= visibleSinceTurn) return false;
     if (msg.role === 'user') return true;
     if (msg.role === 'assistant') {
+      if (msg.panel_id) return msg.panel_id === panelId;
       return seenModels.some((pm) => pm.provider === msg.provider && pm.model === msg.model);
     }
     return false;
@@ -119,13 +122,13 @@ export default function ChatPanel({
               }
             }
             const isRetrying = msg.role === 'assistant'
-              && retryingKey === `${msg.provider}:${msg.model}:${msg.turn_number}`;
+              && retryingKey === `${panelId}:${msg.turn_number}`;
             elements.push(
               <MessageBubble
                 key={msg.id || `temp-${i}`}
                 message={msg}
                 onRetry={msg.role === 'assistant' && onRetry
-                  ? (m) => onRetry({ provider: m.provider, model: m.model, turn_number: m.turn_number })
+                  ? (m) => onRetry({ provider: m.provider, model: m.model, turn_number: m.turn_number, panel_id: panelId })
                   : undefined}
                 isRetrying={isRetrying}
                 onEdit={msg.role === 'user' ? onEdit : undefined}
@@ -158,10 +161,10 @@ export default function ChatPanel({
               <button
                 type="button"
                 className="error-retry-btn"
-                onClick={() => onRetry({ provider, model, turn_number: error.turnNumber })}
-                disabled={retryingKey === `${provider}:${model}:${error.turnNumber}`}
+                onClick={() => onRetry({ provider, model, turn_number: error.turnNumber, panel_id: panelId })}
+                disabled={retryingKey === `${panelId}:${error.turnNumber}`}
               >
-                {retryingKey === `${provider}:${model}:${error.turnNumber}` ? 'Retrying...' : 'Retry'}
+                {retryingKey === `${panelId}:${error.turnNumber}` ? 'Retrying...' : 'Retry'}
               </button>
             )}
           </div>

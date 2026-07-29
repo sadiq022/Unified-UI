@@ -118,6 +118,7 @@ class MessageResponse(BaseModel):
     attached_file_content: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    panel_id: Optional[str] = None
     response_time_ms: Optional[float] = None
     token_count: Optional[int] = None
     created_at: datetime
@@ -131,6 +132,7 @@ class MessageResponse(BaseModel):
 class ChatTarget(BaseModel):
     provider: str
     model: str
+    panel_id: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -145,6 +147,7 @@ class ChatRequest(BaseModel):
 class ChatResponseItem(BaseModel):
     provider: str
     model: str
+    panel_id: Optional[str] = None
     content: str
     response_time_ms: float
     token_count: Optional[int] = None
@@ -162,6 +165,7 @@ class RetryRequest(BaseModel):
     turn_number: int
     provider: str
     model: str
+    panel_id: Optional[str] = None
 
 
 class EditMessageRequest(BaseModel):
