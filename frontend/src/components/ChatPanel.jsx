@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import ModelSelector from './ModelSelector.jsx';
 import MessageBubble from './MessageBubble.jsx';
 
@@ -25,12 +25,20 @@ export default function ChatPanel({
   onRetry,
   retryingKey,
   onEdit,
+  onCitationClick,
 }) {
   const messagesEndRef = useRef(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
+
+  // A fresh error means it's a new problem — don't leave a stale expanded
+  // detail panel open across unrelated failures.
+  useEffect(() => {
+    setShowErrorDetails(false);
+  }, [error?.message]);
 
   // Show user messages, and assistant replies that belong to this panel. Each
   // assistant message is tagged with the panel_id of whoever requested it, so
@@ -53,6 +61,20 @@ export default function ChatPanel({
   const compactionByKey = {};
   for (const c of compactions || []) {
     compactionByKey[`${c.provider}:${c.model}`] = c.covers_through_turn;
+  }
+
+  // Every "generate with sources" turn stores its sentence table once, on the
+  // user message — look it up by turn_number so any panel's MoM answer for
+  // that turn can resolve its citations against it.
+  const sentencesByTurn = {};
+  for (const m of messages) {
+    if (m.role === 'user' && m.source_sentences) {
+      try {
+        sentencesByTurn[m.turn_number] = JSON.parse(m.source_sentences);
+      } catch {
+        // ignore malformed/legacy rows
+      }
+    }
   }
 
   // With streaming, panels finish at different times — only show "Thinking..."
@@ -132,6 +154,8 @@ export default function ChatPanel({
                   : undefined}
                 isRetrying={isRetrying}
                 onEdit={msg.role === 'user' ? onEdit : undefined}
+                sourceSentences={sentencesByTurn[msg.turn_number]}
+                onCitationClick={onCitationClick}
               />
             );
             return elements;
@@ -156,16 +180,30 @@ export default function ChatPanel({
 
         {error && (
           <div className="error-banner">
-            ⚠️ {error.message}
-            {error.turnNumber != null && onRetry && (
+            <div className="error-banner-row">
+              <span className="error-banner-message">⚠️ {error.message}</span>
+              {error.turnNumber != null && onRetry && (
+                <button
+                  type="button"
+                  className="error-retry-btn"
+                  onClick={() => onRetry({ provider, model, turn_number: error.turnNumber, panel_id: panelId })}
+                  disabled={retryingKey === `${panelId}:${error.turnNumber}`}
+                >
+                  {retryingKey === `${panelId}:${error.turnNumber}` ? 'Retrying...' : 'Retry'}
+                </button>
+              )}
+            </div>
+            {error.detail && (
               <button
                 type="button"
-                className="error-retry-btn"
-                onClick={() => onRetry({ provider, model, turn_number: error.turnNumber, panel_id: panelId })}
-                disabled={retryingKey === `${panelId}:${error.turnNumber}`}
+                className="error-details-toggle"
+                onClick={() => setShowErrorDetails((v) => !v)}
               >
-                {retryingKey === `${panelId}:${error.turnNumber}` ? 'Retrying...' : 'Retry'}
+                {showErrorDetails ? 'Hide technical details' : 'Show technical details'}
               </button>
+            )}
+            {showErrorDetails && error.detail && (
+              <pre className="error-detail-text">{error.detail}</pre>
             )}
           </div>
         )}

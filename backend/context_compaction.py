@@ -24,6 +24,18 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
+def estimate_usage_pct(context_messages: list[dict], model: str) -> float:
+    """
+    What fraction of this model's context window the given context list (the
+    exact messages actually sent for a call) is using — same chars/4 heuristic
+    maybe_compact_context() uses to decide when to trigger, surfaced for
+    display so usage is visible before it ever gets anywhere near that trigger.
+    """
+    total_tokens = sum(_estimate_tokens(m["content"]) for m in context_messages)
+    window = get_context_length(model)
+    return round((total_tokens / window) * 100, 1)
+
+
 def _format_transcript(messages: list[dict]) -> str:
     lines = []
     for m in messages:

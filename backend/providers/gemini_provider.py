@@ -8,7 +8,10 @@ class GeminiProvider(BaseProvider):
 
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
+    async def chat(
+        self, messages: list[dict], model: str, api_key: str,
+        max_tokens: int | None = None, temperature: float | None = None,
+    ) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         # Convert OpenAI-style messages to Gemini format
@@ -50,7 +53,7 @@ class GeminiProvider(BaseProvider):
         payload = {
             "contents": merged,
             "generationConfig": {
-                "temperature": 0.7,
+                "temperature": temperature if temperature is not None else 0.7,
                 "maxOutputTokens": max_tokens or 4096,
             },
         }
@@ -109,7 +112,7 @@ class GeminiProvider(BaseProvider):
                 merged.append(item)
         return merged, system_instruction.strip()
 
-    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
         merged, system_instruction = self._build_contents(messages)
 
         url = f"{self.BASE_URL}/{model}:streamGenerateContent"
@@ -136,6 +139,9 @@ class GeminiProvider(BaseProvider):
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    usage = chunk.get("usageMetadata")
+                    if usage and usage_sink is not None:
+                        usage_sink["total_tokens"] = usage.get("totalTokenCount")
                     candidates = chunk.get("candidates", [])
                     if not candidates:
                         continue

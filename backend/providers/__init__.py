@@ -164,6 +164,14 @@ def get_models(provider_name: str) -> list[str]:
 
 def is_vision_model(provider_name: str, model: str) -> bool:
     """Whether a given provider/model pair can accept image input."""
+    if provider_name.lower() == "local":
+        # Whatever's loaded on the user's own server is arbitrary and can
+        # change any time they swap GGUFs — there's no fixed list to check
+        # against like the hosted providers. Trust the user: if they attach
+        # an image, assume they've loaded a vision-capable model (one served
+        # with its --mmproj file). A text-only model will just ignore or
+        # error on the image, same as pointing any other tool at it wrong.
+        return True
     return model in VISION_MODELS.get(provider_name.lower(), [])
 
 

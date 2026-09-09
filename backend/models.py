@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -61,6 +61,19 @@ class Message(Base):
     panel_id = Column(String(64), nullable=True)
     response_time_ms = Column(Float, nullable=True)
     token_count = Column(Integer, nullable=True)
+    # % of this model's context window the context actually sent for this call
+    # used (chars/4 estimate, same heuristic the compaction trigger uses).
+    context_usage_pct = Column(Float, nullable=True)
+    # Marks an assistant message's content as structured JSON instead of plain
+    # markdown text — e.g. "mom_json" for a meeting-minutes-with-sources reply.
+    # Null/default means "render as normal text", so this is fully backward
+    # compatible with every existing message.
+    content_format = Column(String(20), nullable=True)
+    # On a USER message that had "generate with sources" enabled: the ordered
+    # sentence table (JSON [{"id": "S1", "text": "..."}, ...]) built from its
+    # attached file, shared by every panel's citations for that turn — stored
+    # once here rather than duplicated on each assistant response.
+    source_sentences = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -88,6 +101,33 @@ class ContextCompaction(Base):
     summary = Column(Text, nullable=False)
     covers_through_turn = Column(Integer, nullable=False)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class Memory(Base):
+    """A durable fact extracted from something the user said, auto-injected
+    into future prompts (pinned facts always; others when topically relevant)."""
+    __tablename__ = "memories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    category = Column(String(20), nullable=False)  # identity | preference | fact | contact | project | goal
+    pinned = Column(Boolean, default=False, nullable=False)
+    source = Column(String(20), default="auto", nullable=False)  # "auto" (extracted) | "manual"
+    uses = Column(Integer, default=0, nullable=False)  # times actually injected into a prompt
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class MemoryAuditState(Base):
+    """Per-user bookkeeping for the periodic memory audit: how many new
+    memories have accumulated since the last audit, and a fingerprint of the
+    last-audited set so an unchanged set never re-triggers the LLM call."""
+    __tablename__ = "memory_audit_state"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    fingerprint = Column(String(64), nullable=True)
+    memories_since_audit = Column(Integer, default=0, nullable=False)
+    audited_at = Column(DateTime, nullable=True)
 
 
 class PanelPreset(Base):

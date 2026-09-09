@@ -7,7 +7,10 @@ class NvidiaProvider(BaseProvider):
 
     BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
+    async def chat(
+        self, messages: list[dict], model: str, api_key: str,
+        max_tokens: int | None = None, temperature: float | None = None,
+    ) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         headers = {
@@ -18,8 +21,12 @@ class NvidiaProvider(BaseProvider):
         payload = {
             "model": model,
             "messages": formatted,
-            "temperature": 0.7,
-            "max_tokens": max_tokens or 8192,
+            "temperature": temperature if temperature is not None else 0.7,
+            # NVIDIA-hosted reasoning models (nemotron, deepseek-v4, etc.) can
+            # spend most of a small budget narrating their reasoning in plain
+            # prose — not even wrapped in <think> tags, so there's nothing to
+            # strip — before ever reaching the real answer.
+            "max_tokens": max_tokens or 16384,
         }
 
         # NVIDIA-hosted reasoning models (e.g. deepseek-ai/deepseek-v4-pro) can take
@@ -33,11 +40,11 @@ class NvidiaProvider(BaseProvider):
         usage = data.get("usage", {})
 
         return {
-            "content": choice["content"],
+            "content": self._extract_openai_compatible_content(choice),
             "token_count": usage.get("total_tokens"),
         }
 
-    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
         formatted = self.format_messages_with_turns(messages)
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -47,8 +54,10 @@ class NvidiaProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
-            "max_tokens": 8192,
+            "max_tokens": 16384,
         }
         # NVIDIA-hosted reasoning models can take several minutes to complete.
-        async for delta in self._stream_sse_openai_compatible(self.BASE_URL, payload, headers, timeout=300.0):
+        async for delta in self._stream_sse_openai_compatible(
+            self.BASE_URL, payload, headers, timeout=300.0, usage_sink=usage_sink
+        ):
             yield delta

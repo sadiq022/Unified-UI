@@ -2,11 +2,6 @@ import json
 import httpx
 from backend.providers.base import BaseProvider
 
-_NO_ANSWER_NOTE = (
-    "[No answer was produced before the token limit was reached — "
-    "showing the model's reasoning instead:]\n"
-)
-
 
 class LocalProvider(BaseProvider):
     """
@@ -21,9 +16,12 @@ class LocalProvider(BaseProvider):
     DEFAULT_BASE_URL = "http://localhost:8000"
 
     # Reasoning models (e.g. gpt-oss) can spend most of a small budget just
-    # "thinking" before writing any visible answer — default well above the
-    # hosted providers since local compute has no per-token cost to weigh.
-    DEFAULT_MAX_TOKENS = 8192
+    # "thinking" before writing any visible answer, and exhaustive structured
+    # output (e.g. "generate with sources" over a long transcript) can run to
+    # thousands of tokens on its own — default well above the hosted providers
+    # since local compute has no per-token cost to weigh, only the model's own
+    # context window (commonly tens of thousands of tokens for local setups).
+    DEFAULT_MAX_TOKENS = 32768
 
     def _chat_url(self, base_url: str) -> str:
         base = (base_url or self.DEFAULT_BASE_URL).strip().rstrip("/")
@@ -38,14 +36,24 @@ class LocalProvider(BaseProvider):
             data = response.json()
         return [m["id"] for m in data.get("data", []) if m.get("id")]
 
-    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
-        formatted = self.format_messages_with_turns(messages)
+    async def chat(
+        self, messages: list[dict], model: str, api_key: str,
+        max_tokens: int | None = None, temperature: float | None = None,
+    ) -> dict:
+        formatted = self.format_messages_with_image(messages)
 
         payload = {
             "model": model,
             "messages": formatted,
-            "temperature": 0.7,
+            "temperature": temperature if temperature is not None else 0.7,
             "max_tokens": max_tokens or self.DEFAULT_MAX_TOKENS,
+            # Qwen3-style hybrid thinking models can spend tens of thousands of
+            # tokens reasoning before ever answering — often 10-100x slower
+            # than just answering directly, and we don't want to show the
+            # reasoning anyway. Tell the chat template to skip it entirely
+            # instead of generating it and filtering it out afterward.
+            # Harmless for templates that don't define this variable.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         # Generous timeout — local inference (especially CPU-only) can be much
@@ -58,32 +66,22 @@ class LocalProvider(BaseProvider):
         choice = data["choices"][0]["message"]
         usage = data.get("usage", {})
 
-        # Reasoning models (llama.cpp, vLLM's --reasoning-parser, etc.) return the
-        # thinking trace in its own "reasoning_content" field, separate from
-        # "content". If the token budget runs out mid-thought, "content" comes
-        # back empty even though the model did produce output — surface the
-        # reasoning instead of leaving the chat bubble blank.
-        content = (choice.get("content") or "").strip()
-        if not content and choice.get("reasoning_content"):
-            content = _NO_ANSWER_NOTE + choice["reasoning_content"]
-
         return {
-            "content": content,
+            "content": self._extract_openai_compatible_content(choice),
             "token_count": usage.get("total_tokens"),
         }
 
-    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
-        formatted = self.format_messages_with_turns(messages)
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
+        formatted = self.format_messages_with_image(messages)
         payload = {
             "model": model,
             "messages": formatted,
             "temperature": 0.7,
             "max_tokens": self.DEFAULT_MAX_TOKENS,
             "stream": True,
+            "stream_options": {"include_usage": True},
+            "chat_template_kwargs": {"enable_thinking": False},
         }
-
-        content_seen = False
-        reasoning_buffer = ""
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream("POST", self._chat_url(api_key), json=payload) as response:
@@ -100,18 +98,18 @@ class LocalProvider(BaseProvider):
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    usage = chunk.get("usage")
+                    if usage and usage_sink is not None:
+                        usage_sink["total_tokens"] = usage.get("total_tokens")
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
-                    delta = choices[0].get("delta", {})
-                    text = delta.get("content")
+                    # Only ever stream real "content" deltas — reasoning models
+                    # (llama.cpp, vLLM's --reasoning-parser, etc.) send their
+                    # thinking trace separately in "reasoning_content", which
+                    # never belongs in the visible chat. If nothing but
+                    # reasoning ever arrives, _stream_target sees an empty
+                    # accumulated response and shows a short "no answer" note.
+                    text = choices[0].get("delta", {}).get("content")
                     if text:
-                        content_seen = True
                         yield text
-                    elif delta.get("reasoning_content"):
-                        reasoning_buffer += delta["reasoning_content"]
-
-        # Same fallback as chat(): nothing but reasoning ever arrived, so show
-        # that instead of ending the stream with an empty bubble.
-        if not content_seen and reasoning_buffer:
-            yield _NO_ANSWER_NOTE + reasoning_buffer

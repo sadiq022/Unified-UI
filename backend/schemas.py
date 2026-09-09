@@ -121,6 +121,9 @@ class MessageResponse(BaseModel):
     panel_id: Optional[str] = None
     response_time_ms: Optional[float] = None
     token_count: Optional[int] = None
+    context_usage_pct: Optional[float] = None
+    content_format: Optional[str] = None  # e.g. "mom_json" — tells the frontend how to render `content`
+    source_sentences: Optional[str] = None  # JSON [{"id","text"}, ...], set on the user message that had it
     created_at: datetime
 
     class Config:
@@ -142,6 +145,8 @@ class ChatRequest(BaseModel):
     image: Optional[str] = None  # base64 data URL, only usable by vision-capable models
     attached_file_name: Optional[str] = None
     attached_file_content: Optional[str] = None  # extracted text, any model can read this
+    with_sources: bool = False  # sentence-indexed transcript + structured citation JSON, see transcript_sourcing.py
+    web_search: bool = False  # when True, run a web search on the message and inject results into context
 
 
 class ChatResponseItem(BaseModel):
@@ -151,7 +156,10 @@ class ChatResponseItem(BaseModel):
     content: str
     response_time_ms: float
     token_count: Optional[int] = None
+    context_usage_pct: Optional[float] = None
+    content_format: Optional[str] = None
     error: Optional[str] = None
+    error_detail: Optional[str] = None  # raw provider error, for an optional "show details" toggle
 
 
 class ChatResponse(BaseModel):
@@ -187,6 +195,25 @@ class CompactionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── Memories ─────────────────────────────────────────────────────────────────────
+
+class MemoryResponse(BaseModel):
+    id: int
+    text: str
+    category: str
+    pinned: bool
+    source: str
+    uses: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MemoryPinUpdate(BaseModel):
+    pinned: bool
 
 
 # ── Panel Presets ───────────────────────────────────────────────────────────────

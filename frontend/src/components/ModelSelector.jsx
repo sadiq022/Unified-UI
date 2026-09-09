@@ -95,7 +95,11 @@ export default function ModelSelector({
         >
           <option value="">Select Model</option>
           {PROVIDERS.filter((p) => configuredProviders.includes(p.id)).map((p) => {
-            const availableModels = restrictToVision
+            // Local models are arbitrary GGUFs the user loads themselves —
+            // there's no fixed list to check "is this one vision-capable"
+            // against like the hosted providers, so it's never filtered out
+            // here; the backend makes the same call (trust the user).
+            const availableModels = restrictToVision && p.id !== 'local'
               ? (modelsByProvider[p.id] || []).filter((m) => (visionModels?.[p.id] || []).includes(m))
               : (modelsByProvider[p.id] || []);
 

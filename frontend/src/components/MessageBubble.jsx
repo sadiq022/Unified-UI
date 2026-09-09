@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import MomView from './MomView.jsx';
 
-export default function MessageBubble({ message, onRetry, isRetrying, onEdit }) {
+export default function MessageBubble({ message, onRetry, isRetrying, onEdit, sourceSentences, onCitationClick }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -10,6 +11,15 @@ export default function MessageBubble({ message, onRetry, isRetrying, onEdit }) 
   const time = message.created_at
     ? new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '';
+
+  let momData = null;
+  if (message.content_format === 'mom_json') {
+    try {
+      momData = JSON.parse(message.content);
+    } catch {
+      momData = null; // fall back to plain text below if it somehow didn't persist as valid JSON
+    }
+  }
 
   const handleCopy = async () => {
     try {
@@ -115,7 +125,14 @@ export default function MessageBubble({ message, onRetry, isRetrying, onEdit }) 
 
         <div className="assistant-message-col">
           <div className={`message-content ${message.role}`}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            {momData ? (
+              <MomView
+                data={momData}
+                onCitationClick={(sourceIds, label) => onCitationClick?.(sourceIds, label, sourceSentences, message)}
+              />
+            ) : (
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            )}
           </div>
 
           <div className="message-meta">
@@ -132,6 +149,11 @@ export default function MessageBubble({ message, onRetry, isRetrying, onEdit }) 
           {message.token_count && (
             <span className="meta-chip">
               <span className="meta-chip-value">{message.token_count} tokens</span>
+            </span>
+          )}
+          {message.context_usage_pct != null && (
+            <span className="meta-chip" title="% of this model's context window used by this call">
+              <span className="meta-chip-value">{message.context_usage_pct}% context</span>
             </span>
           )}
           <button

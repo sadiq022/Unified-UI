@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
-import ApiKeyManager from './components/ApiKeyManager.jsx';
+import SettingsModal from './components/SettingsModal.jsx';
+import SourcePanel from './components/SourcePanel.jsx';
 import Auth from './components/Auth.jsx';
 import PresetsMenu from './components/PresetsMenu.jsx';
 import { PROVIDERS } from './constants.js';
@@ -99,15 +100,18 @@ export default function App() {
   const [panelErrors, setPanelErrors] = useState({});
   const [retryingKey, setRetryingKey] = useState(null); // "provider:model:turnNumber"
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('account');
   const [configuredProviders, setConfiguredProviders] = useState([]);
   const [modelsByProvider, setModelsByProvider] = useState({});
   const [visionModels, setVisionModels] = useState({});
   const [presets, setPresets] = useState([]);
   const [attachedImage, setAttachedImage] = useState(null); // { dataUrl, name }
   const [attachedFile, setAttachedFile] = useState(null); // { name, content, truncated }
+  const [withSources, setWithSources] = useState(false); // "generate with sources" toggle, only meaningful with a file attached
   const [extractingFile, setExtractingFile] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [compactions, setCompactions] = useState([]); // [{provider, model, covers_through_turn}]
+  const [sourcePanel, setSourcePanel] = useState(null); // { sentences, highlightIds, label } | null
   const textareaRef = useRef(null);
   const activeConvIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -436,6 +440,11 @@ export default function App() {
       setPanelErrors({});
       setClosedPanels([]);
       setCompactions([]);
+      // Same reasoning as the auto-create path in handleSend: without this,
+      // the conversation's panel_layout stays unset until something else
+      // happens to save it, and a refresh in that window would reconstruct
+      // fresh panel_ids that don't match whatever gets sent in the meantime.
+      savePanelLayout(conv.id, panels);
     } catch (err) {
       console.error('Failed to create conversation:', err);
     }
@@ -514,6 +523,13 @@ export default function App() {
         setConversations((prev) => [conv, ...prev]);
         setActiveConvId(conv.id);
         convId = conv.id;
+        // Save the panel layout (with its panel_ids) right away — otherwise
+        // this conversation has messages stamped with a panel_id that was
+        // never persisted anywhere else. Refreshing before anything else
+        // triggers a save (e.g. switching a model) would then fall back to
+        // reconstructing the layout from scratch with brand-new panel_ids,
+        // permanently orphaning the messages already tagged with the old ones.
+        savePanelLayout(convId, panels);
       } catch (err) {
         console.error('Failed to create conversation:', err);
         return;
@@ -523,10 +539,12 @@ export default function App() {
     const imageToSend = attachedImage?.dataUrl || null;
     const fileNameToSend = attachedFile?.name || null;
     const fileContentToSend = attachedFile?.content || null;
+    const withSourcesToSend = withSources && !!fileContentToSend;
 
     setInputValue('');
     setAttachedImage(null);
     setAttachedFile(null);
+    setWithSources(false);
     setIsLoading(true);
     setPanelErrors({});
 
@@ -563,21 +581,47 @@ export default function App() {
         } else if (event.type === 'done') {
           const key = event.panel_id;
           const existingId = streamingIds[key];
-          setMessages((prev) => prev.map((m) => (m.id === existingId ? {
-            ...m,
-            content: event.content,
-            response_time_ms: event.response_time_ms,
-          } : m)));
+          setMessages((prev) => {
+            // No delta ever arrived for this panel (e.g. the model produced
+            // nothing but reasoning that only got recovered as a single
+            // fallback chunk at the very end) — there's no placeholder bubble
+            // to update, so create one now instead of silently dropping it.
+            if (!existingId) {
+              return [...prev, {
+                id: `streaming-${key}-${Date.now()}`,
+                conversation_id: convId,
+                turn_number: turnNumber,
+                role: 'assistant',
+                content: event.content,
+                provider: event.provider,
+                model: event.model,
+                panel_id: event.panel_id,
+                response_time_ms: event.response_time_ms,
+                token_count: event.token_count,
+                context_usage_pct: event.context_usage_pct,
+                content_format: event.content_format,
+                created_at: new Date().toISOString(),
+              }];
+            }
+            return prev.map((m) => (m.id === existingId ? {
+              ...m,
+              content: event.content,
+              response_time_ms: event.response_time_ms,
+              token_count: event.token_count,
+              context_usage_pct: event.context_usage_pct,
+              content_format: event.content_format,
+            } : m));
+          });
         } else if (event.type === 'error') {
           setPanelErrors((prev) => ({
             ...prev,
-            [event.panel_id]: { message: event.error, turnNumber },
+            [event.panel_id]: { message: event.error, detail: event.error_detail, turnNumber },
           }));
         } else if (event.type === 'end') {
           loadConversations();
           refreshCompactions(convId);
         }
-      });
+      }, withSourcesToSend);
     } catch (err) {
       console.error('Send failed:', err);
       setPanelErrors({ global: err.message });
@@ -604,7 +648,7 @@ export default function App() {
       if (resp.error) {
         setPanelErrors((prev) => ({
           ...prev,
-          [panel_id]: { message: resp.error, turnNumber: turn_number },
+          [panel_id]: { message: resp.error, detail: resp.error_detail, turnNumber: turn_number },
         }));
         return;
       }
@@ -625,6 +669,7 @@ export default function App() {
           panel_id: resp.panel_id,
           response_time_ms: resp.response_time_ms,
           token_count: resp.token_count,
+          context_usage_pct: resp.context_usage_pct,
           created_at: new Date().toISOString(),
         };
         const next = idx >= 0
@@ -668,7 +713,7 @@ export default function App() {
       const newErrors = {};
       for (const resp of result.responses) {
         if (resp.error) {
-          newErrors[resp.panel_id] = { message: resp.error, turnNumber: result.turn_number };
+          newErrors[resp.panel_id] = { message: resp.error, detail: resp.error_detail, turnNumber: result.turn_number };
         } else {
           newMessages.push({
             id: Date.now() + Math.random(),
@@ -681,6 +726,7 @@ export default function App() {
             panel_id: resp.panel_id,
             response_time_ms: resp.response_time_ms,
             token_count: resp.token_count,
+            context_usage_pct: resp.context_usage_pct,
             created_at: new Date().toISOString(),
           });
         }
@@ -781,6 +827,19 @@ export default function App() {
 
   const handleRemoveFile = () => {
     setAttachedFile(null);
+    setWithSources(false);
+  };
+
+  // One shared source panel for the whole conversation — whichever citation
+  // was last clicked, in any panel, from any model's MoM output, is what it
+  // shows. Not spawned per panel/model.
+  const handleCitationClick = (sourceIds, label, sentences, message) => {
+    if (!sentences) return;
+    setSourcePanel({
+      sentences,
+      highlightIds: sourceIds,
+      label: message?.model ? `${message.model} — ${label}` : label,
+    });
   };
 
   // ── Render ─────────────────────────────────────────────────
@@ -800,7 +859,7 @@ export default function App() {
         onSelect={setActiveConvId}
         onCreate={handleCreateConversation}
         onDelete={handleDeleteConversation}
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenSettings={(tab) => { setSettingsTab(tab || 'account'); setShowSettings(true); }}
         userEmail={currentUser.email}
         onLogout={handleLogout}
       />
@@ -891,9 +950,12 @@ export default function App() {
               hideBody={showWelcome}
               visionModels={visionModels}
               restrictToVision={!!attachedImage}
+              onCitationClick={handleCitationClick}
             />
           ))}
         </div>
+
+        <SourcePanel panel={sourcePanel} onClose={() => setSourcePanel(null)} />
 
         {showWelcome && (
           <div className="welcome-hero">
@@ -994,6 +1056,17 @@ export default function App() {
               </div>
             )}
 
+            {attachedFile && (
+              <label className="with-sources-toggle" title="Ask for a structured summary (e.g. meeting minutes) with every point traceable back to the exact sentence in this document">
+                <input
+                  type="checkbox"
+                  checked={withSources}
+                  onChange={(e) => setWithSources(e.target.checked)}
+                />
+                Generate with sources
+              </label>
+            )}
+
             <textarea
               ref={textareaRef}
               value={inputValue}
@@ -1018,10 +1091,13 @@ export default function App() {
         </div>
       </div>
 
-      <ApiKeyManager
+      <SettingsModal
         isOpen={showSettings}
+        initialTab={settingsTab}
         onClose={() => setShowSettings(false)}
         onKeysChange={handleKeysChange}
+        userEmail={currentUser.email}
+        onLogout={handleLogout}
       />
     </div>
   );

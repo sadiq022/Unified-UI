@@ -7,7 +7,10 @@ class OpenRouterProvider(BaseProvider):
 
     BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
+    async def chat(
+        self, messages: list[dict], model: str, api_key: str,
+        max_tokens: int | None = None, temperature: float | None = None,
+    ) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         headers = {
@@ -20,7 +23,7 @@ class OpenRouterProvider(BaseProvider):
         payload = {
             "model": model,
             "messages": formatted,
-            "temperature": 0.7,
+            "temperature": temperature if temperature is not None else 0.7,
             "max_tokens": max_tokens or 8192,
         }
 
@@ -33,11 +36,11 @@ class OpenRouterProvider(BaseProvider):
         usage = data.get("usage", {})
 
         return {
-            "content": choice["content"],
+            "content": self._extract_openai_compatible_content(choice),
             "token_count": usage.get("total_tokens"),
         }
 
-    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
         formatted = self.format_messages_with_turns(messages)
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -51,5 +54,5 @@ class OpenRouterProvider(BaseProvider):
             "temperature": 0.7,
             "max_tokens": 8192,
         }
-        async for delta in self._stream_sse_openai_compatible(self.BASE_URL, payload, headers):
+        async for delta in self._stream_sse_openai_compatible(self.BASE_URL, payload, headers, usage_sink=usage_sink):
             yield delta

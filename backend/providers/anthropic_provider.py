@@ -8,7 +8,10 @@ class AnthropicProvider(BaseProvider):
 
     BASE_URL = "https://api.anthropic.com/v1/messages"
 
-    async def chat(self, messages: list[dict], model: str, api_key: str, max_tokens: int | None = None) -> dict:
+    async def chat(
+        self, messages: list[dict], model: str, api_key: str,
+        max_tokens: int | None = None, temperature: float | None = None,
+    ) -> dict:
         formatted = self.format_messages_with_turns(messages)
 
         # Anthropic requires system message to be separate
@@ -42,6 +45,7 @@ class AnthropicProvider(BaseProvider):
             "model": model,
             "max_tokens": max_tokens or 4096,
             "messages": merged,
+            "temperature": temperature if temperature is not None else 1.0,
         }
         if system_content.strip():
             payload["system"] = system_content.strip()
@@ -84,7 +88,7 @@ class AnthropicProvider(BaseProvider):
                 merged.append(msg)
         return merged, system_content.strip()
 
-    async def chat_stream(self, messages: list[dict], model: str, api_key: str):
+    async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
         merged, system_content = self._build_request(messages)
 
         headers = {
@@ -96,6 +100,7 @@ class AnthropicProvider(BaseProvider):
         if system_content:
             payload["system"] = system_content
 
+        input_tokens = 0
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", self.BASE_URL, json=payload, headers=headers) as response:
                 if response.status_code >= 400:
@@ -109,7 +114,14 @@ class AnthropicProvider(BaseProvider):
                         event = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    if event.get("type") == "content_block_delta":
+                    event_type = event.get("type")
+                    if event_type == "message_start":
+                        input_tokens = event.get("message", {}).get("usage", {}).get("input_tokens", 0) or 0
+                    elif event_type == "message_delta":
+                        output_tokens = event.get("usage", {}).get("output_tokens", 0) or 0
+                        if usage_sink is not None:
+                            usage_sink["total_tokens"] = input_tokens + output_tokens
+                    elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
                             text = delta.get("text")

@@ -135,7 +135,7 @@ export const sendMessage = (conversation_id, message, targets, image = null) =>
 // each one. Doesn't use the request() helper since it needs the raw response
 // body reader instead of a single parsed JSON result.
 export async function sendMessageStream(
-  conversation_id, message, targets, image, attachedFileName, attachedFileContent, onEvent
+  conversation_id, message, targets, image, attachedFileName, attachedFileContent, onEvent, withSources = false
 ) {
   const headers = { 'Content-Type': 'application/json' };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
@@ -147,6 +147,7 @@ export async function sendMessageStream(
       conversation_id, message, targets, image,
       attached_file_name: attachedFileName,
       attached_file_content: attachedFileContent,
+      with_sources: withSources,
     }),
   });
 
@@ -204,3 +205,10 @@ export const editMessage = (
       attached_file_content: attachedFileContent,
     }),
   });
+
+// ── Memories ──────────────────────────────────────────────
+export const getMemories = () => request('/api/memories');
+export const setMemoryPinned = (id, pinned) =>
+  request(`/api/memories/${id}`, { method: 'PATCH', body: JSON.stringify({ pinned }) });
+export const deleteMemory = (id) =>
+  request(`/api/memories/${id}`, { method: 'DELETE' });
