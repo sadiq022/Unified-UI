@@ -21,10 +21,22 @@ from backend.providers import get_provider
 from backend.memory_prompts import (
     EXTRACTION_SYSTEM_PROMPT, AUDIT_SYSTEM_PROMPT, VALID_CATEGORIES, AUTO_PIN_CATEGORIES,
 )
+from backend.text_cleanup import strip_think_blocks
 
 JACCARD_THRESHOLD = 0.6
 AUDIT_EVERY_N_MEMORIES = 5
 AUDIT_REJECT_IF_REMOVES_OVER = 0.5  # reject the whole audit result if it deletes >50%
+
+# The first active model does the extraction; the second (if there is one) is
+# only a backup if the first errors. If both fail, nothing is written this turn.
+MAX_EXTRACTION_MODELS = 2
+# Headroom for models that emit a reasoning preamble before the JSON — 500 was
+# enough for the JSON alone but not for a model that thinks first.
+EXTRACTION_MAX_TOKENS = 1500
+# Only the user's own short statements matter for extraction; a long assistant
+# answer or an attached transcript just bloats the prompt (and can trip
+# provider rate limits, which would force a needless fallback).
+MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 1500
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
@@ -61,9 +73,17 @@ def _regex_extract(text: str) -> list[dict]:
     return results
 
 
-def _parse_json_array(raw: str) -> list:
-    """Defensively parse an LLM's JSON array response, tolerating markdown fences."""
-    text = (raw or "").strip()
+def _parse_json_array(raw: str) -> list | None:
+    """
+    Defensively parse an LLM's JSON array response. Returns the list (which may
+    legitimately be empty — "nothing durable to extract"), or None if the
+    response wasn't a usable JSON array at all — callers must treat those two
+    differently. Reasoning traces (<think>...</think>, including the empty
+    shell models emit even with thinking disabled) and markdown fences are
+    stripped first — parsing the raw string used to fail on the very common
+    "<think>\\n\\n</think>\\n\\n[...]" shape, silently discarding good output.
+    """
+    text = strip_think_blocks(raw or "")
     if text.startswith("```"):
         text = text.strip("`")
         if text[:4].lower() == "json":
@@ -72,20 +92,54 @@ def _parse_json_array(raw: str) -> list:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
-async def _llm_extract(transcript: list[dict], provider_name: str, model: str, api_key: str) -> list[dict]:
-    """LLM extractor (Stage 1A). Fails open — any error just yields no candidates."""
+async def _llm_extract(
+    transcript: list[dict], provider_name: str, model: str, api_key: str
+) -> list[dict] | None:
+    """
+    LLM extractor (Stage 1A). Returns the candidate facts (possibly an empty
+    list — the model looked and found nothing durable, which is a success), or
+    None if this model failed: the call errored, or what came back wasn't
+    parseable. The caller falls back to the next model on None. Failures are
+    logged — they used to be swallowed silently, which made "memory isn't
+    working" impossible to diagnose.
+    """
+    label = f"{provider_name}/{model}"
     try:
         provider = get_provider(provider_name)
-        messages = [{"role": "system", "content": EXTRACTION_SYSTEM_PROMPT}, *transcript]
-        result = await provider.chat(messages, model, api_key, max_tokens=500, temperature=0.1)
-        candidates = _parse_json_array(result.get("content", ""))
-        return [c for c in candidates if isinstance(c, dict) and c.get("text")]
-    except Exception:
-        return []
+        # One user message holding the conversation as plain text. Passing the
+        # turns as real chat messages made models answer the last one (e.g.
+        # "Nice to meet you, Zorlak!") instead of returning the JSON array.
+        conversation_text = "\n\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in transcript
+        )
+        messages = [
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Extract durable facts about the USER from the conversation below. "
+                    "Do not reply to it. Respond with ONLY the JSON array.\n\n"
+                    f"<conversation>\n{conversation_text}\n</conversation>"
+                ),
+            },
+        ]
+        result = await provider.chat(
+            messages, model, api_key, max_tokens=EXTRACTION_MAX_TOKENS, temperature=0.1
+        )
+    except Exception as e:
+        print(f"[memory] extraction call failed on {label}: {type(e).__name__}: {e}")
+        return None
+
+    content = result.get("content", "")
+    parsed = _parse_json_array(content)
+    if parsed is None:
+        print(f"[memory] extraction on {label} returned unparseable output: {content[:200]!r}")
+        return None
+    return [c for c in parsed if isinstance(c, dict) and c.get("text")]
 
 
 def _tokenize(text: str) -> set[str]:
@@ -213,14 +267,32 @@ async def _run_audit(db, user_id: int, provider_name: str, model: str, api_key: 
         ))
 
 
-async def extract_and_store(conversation_id: int, user_id: int, provider: str, model: str, api_key: str) -> None:
+async def extract_and_store(
+    conversation_id: int, user_id: int, models: list[tuple[str, str, str]]
+) -> None:
     """
     Entry point, fired once per turn right after the user's message is saved
     (not once per panel/model that answers it). Opens its own DB session since
     this runs as a background task after the request that triggered it has
     already returned.
+
+    models: [(provider, model, api_key), ...] — every active model, in panel
+    order. The first does the extraction; if it errors, the second is tried as
+    a backup; if that fails too (or there was only one), nothing is written for
+    this turn — no partial/regex-only results either.
     """
     try:
+        # Same model picked in two panels would just repeat the same failure.
+        unique_models = []
+        seen = set()
+        for provider, model, api_key in models:
+            if (provider, model) not in seen:
+                seen.add((provider, model))
+                unique_models.append((provider, model, api_key))
+        unique_models = unique_models[:MAX_EXTRACTION_MODELS]
+        if not unique_models:
+            return
+
         async with async_session() as db:
             history_result = await db.execute(
                 select(Message)
@@ -236,12 +308,29 @@ async def extract_and_store(conversation_id: int, user_id: int, provider: str, m
             if not latest_user_msg or not latest_user_msg.content:
                 return
 
-            candidates = _regex_extract(latest_user_msg.content)
+            # Text only — images/attachments are stripped, just the conversational
+            # turns, each capped so a long answer/transcript can't bloat the prompt.
+            transcript = [
+                {"role": m.role, "content": m.content[:MAX_TRANSCRIPT_CHARS_PER_MESSAGE]}
+                for m in recent if m.content
+            ]
 
-            # Text only — images/attachments are stripped, just the conversational turns.
-            transcript = [{"role": m.role, "content": m.content} for m in recent if m.content]
-            candidates.extend(await _llm_extract(transcript, provider, model, api_key))
+            llm_candidates = None
+            used_model = None
+            for provider, model, api_key in unique_models:
+                llm_candidates = await _llm_extract(transcript, provider, model, api_key)
+                if llm_candidates is not None:
+                    used_model = (provider, model, api_key)
+                    break
+                print(f"[memory] {provider}/{model} failed"
+                      + (" — trying backup model" if (provider, model, api_key) != unique_models[-1] else ""))
 
+            if used_model is None:
+                print("[memory] every extraction model failed — nothing written this turn")
+                return
+
+            # The LLM prompt asks for max 2 facts but models don't always obey.
+            candidates = _regex_extract(latest_user_msg.content) + llm_candidates[:2]
             if not candidates:
                 return
 
@@ -249,7 +338,7 @@ async def extract_and_store(conversation_id: int, user_id: int, provider: str, m
             existing = list(existing_result.scalars().all())
 
             stored_any = False
-            for candidate in candidates[:4]:  # regex(2) + LLM(2) max per turn
+            for candidate in candidates:  # regex(2) + LLM(2) max per turn
                 mem = await _store_candidate(db, user_id, candidate, existing)
                 if mem:
                     stored_any = True
@@ -267,7 +356,8 @@ async def extract_and_store(conversation_id: int, user_id: int, provider: str, m
             await db.flush()
 
             if state.memories_since_audit >= AUDIT_EVERY_N_MEMORIES:
-                await _run_audit(db, user_id, provider, model, api_key)
+                # Reuse the model that just proved it works this turn.
+                await _run_audit(db, user_id, *used_model)
 
             await db.commit()
     except Exception:

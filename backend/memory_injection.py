@@ -9,6 +9,7 @@ import math
 import re
 from sqlalchemy import select
 from backend.models import Memory
+from backend.current_date import build_date_message
 from backend.memory_prompts import PINNED_PREFACE_HEADER, EXTENDED_PREFACE_HEADER
 
 TOP_K_EXTENDED = 3
@@ -70,7 +71,7 @@ def _bm25_top_k(memories: list[Memory], query_text: str, k: int = TOP_K_EXTENDED
 async def build_memory_preface(db, user_id: int, query_text: str) -> tuple[list[dict], list[Memory]]:
     """
     Returns (preface_messages, injected_memories):
-      - preface_messages: 0-2 system-role {"role","content"} dicts to prepend
+      - preface_messages: the current-date message plus 0-2 system-role {"role","content"} dicts to prepend
         to a target's context — pinned facts, then the top relevant extended
         facts for this specific message.
       - injected_memories: the Memory rows actually used, so the caller can
@@ -78,16 +79,17 @@ async def build_memory_preface(db, user_id: int, query_text: str) -> tuple[list[
         for every panel/target in the same turn, so callers should compute it
         once, not per target).
     """
+    # Always first, even for users with no memories yet.
+    preface = [build_date_message()]
+    injected = []
+
     result = await db.execute(select(Memory).where(Memory.user_id == user_id))
     memories = result.scalars().all()
     if not memories:
-        return [], []
+        return preface, []
 
     pinned = [m for m in memories if m.pinned]
     extended = [m for m in memories if not m.pinned]
-
-    preface = []
-    injected = []
 
     if pinned:
         lines = "\n".join(f"- {m.text}" for m in pinned)

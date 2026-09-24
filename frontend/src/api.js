@@ -33,8 +33,18 @@ export function getTokenExpiryMs(token) {
   }
 }
 
+// Lets the backend tell models the user's real "today" (see backend/current_date.py).
+const TIMEZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+})();
+
 async function request(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...options.headers };
+  if (TIMEZONE) headers['X-Timezone'] = TIMEZONE;
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
@@ -135,9 +145,10 @@ export const sendMessage = (conversation_id, message, targets, image = null) =>
 // each one. Doesn't use the request() helper since it needs the raw response
 // body reader instead of a single parsed JSON result.
 export async function sendMessageStream(
-  conversation_id, message, targets, image, attachedFileName, attachedFileContent, onEvent, withSources = false
+  conversation_id, message, targets, image, attachedFileName, attachedFileContent, onEvent, withSources = false, webSearch = false
 ) {
   const headers = { 'Content-Type': 'application/json' };
+  if (TIMEZONE) headers['X-Timezone'] = TIMEZONE;
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
   const res = await fetch(`${BASE}/api/chat/send-stream`, {
@@ -148,6 +159,7 @@ export async function sendMessageStream(
       attached_file_name: attachedFileName,
       attached_file_content: attachedFileContent,
       with_sources: withSources,
+      web_search: webSearch,
     }),
   });
 
@@ -195,16 +207,53 @@ export const retryMessage = (conversation_id, turn_number, provider, model, pane
     body: JSON.stringify({ conversation_id, turn_number, provider, model, panel_id }),
   });
 export const editMessage = (
-  conversation_id, message_id, content, targets, image = null, attachedFileName = null, attachedFileContent = null
+  conversation_id, message_id, content, targets, image = null, attachedFileName = null, attachedFileContent = null,
+  webSearch = false
 ) =>
   request('/api/chat/edit', {
     method: 'POST',
     body: JSON.stringify({
-      conversation_id, message_id, content, targets, image,
+      conversation_id, message_id, content, targets, image, web_search: webSearch,
       attached_file_name: attachedFileName,
       attached_file_content: attachedFileContent,
     }),
   });
+
+// ── Document OCR ─────────────────────────────────────────────
+export const uploadOcrDocument = async (file, provider, model) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('provider', provider);
+  formData.append('model', model);
+  const headers = {};
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const res = await fetch(`${BASE}/api/ocr/documents`, { method: 'POST', headers, body: formData });
+  if (res.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event(AUTH_LOGOUT_EVENT));
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+};
+export const listOcrDocuments = () => request('/api/ocr/documents');
+export const getOcrDocument = (id) => request(`/api/ocr/documents/${id}`);
+export const deleteOcrDocument = (id) => request(`/api/ocr/documents/${id}`, { method: 'DELETE' });
+export const correctOcrField = (fieldId, data) =>
+  request(`/api/ocr/fields/${fieldId}`, { method: 'PATCH', body: JSON.stringify(data) });
+// The page image route needs auth, which a plain <img src> can't send — fetch
+// it as a blob and hand back an object URL instead. Caller must revoke it
+// (URL.revokeObjectURL) once the image is no longer shown.
+export async function fetchOcrPageImageUrl(documentId, pageNumber) {
+  const headers = {};
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const res = await fetch(`${BASE}/api/ocr/documents/${documentId}/pages/${pageNumber}/image`, { headers });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
 
 // ── Memories ──────────────────────────────────────────────
 export const getMemories = () => request('/api/memories');

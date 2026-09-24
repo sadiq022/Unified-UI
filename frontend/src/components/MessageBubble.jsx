@@ -3,14 +3,36 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MomView from './MomView.jsx';
 
+// The backend stores naive UTC timestamps (no "Z"), which the browser would
+// otherwise read as local time and show hours off. Streamed-in messages use
+// toISOString() and already carry the "Z".
+// Markdown links (e.g. web-search citations) should open in a new tab instead
+// of navigating away from the chat. `noopener noreferrer` stops the opened
+// page from getting a handle back on this one.
+function MarkdownLink({ href, children, ...props }) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      {children}
+    </a>
+  );
+}
+
+function formatTimestamp(value) {
+  if (!value) return '';
+  const iso = /(Z|[+-]\d\d:?\d\d)$/.test(value) ? value : `${value}Z`;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString([], {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 export default function MessageBubble({ message, onRetry, isRetrying, onEdit, sourceSentences, onCitationClick }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
-  const time = message.created_at
-    ? new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '';
+  const time = formatTimestamp(message.created_at);
 
   let momData = null;
   if (message.content_format === 'mom_json') {
@@ -110,6 +132,7 @@ export default function MessageBubble({ message, onRetry, isRetrying, onEdit, so
             </div>
           </div>
         )}
+        {time && !editing && <div className="message-time message-time-user">{time}</div>}
       </div>
     );
   }
@@ -131,11 +154,12 @@ export default function MessageBubble({ message, onRetry, isRetrying, onEdit, so
                 onCitationClick={(sourceIds, label) => onCitationClick?.(sourceIds, label, sourceSentences, message)}
               />
             ) : (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>{message.content}</ReactMarkdown>
             )}
           </div>
 
           <div className="message-meta">
+          {time && <span className="message-time">{time}</span>}
           {message.model && (
             <span className="meta-chip meta-chip-model">
               <span className="meta-chip-value">{message.model}</span>

@@ -35,6 +35,8 @@ unified_ui.db
 *.sqlite
 *.sqlite3
 data/jwt_secret.key
+data/web_search_log.txt
+data/ocr_uploads/
 
 # Personal scratch scripts (repeatedly used to paste real API keys for testing)
 temp.py
@@ -52,3 +54,9 @@ yarn-error.log*
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Windows "downloaded from the internet" marker (NTFS alternate data stream) —
+# shows up as its own file over the WSL/drvfs bridge, e.g.
+# "somefile.md:Zone.Identifier" (real colon) or "somefile.md：Zone.Identifier"
+# (fullwidth colon substitute WSL uses for ':' in a filename).
+*Zone.Identifier*

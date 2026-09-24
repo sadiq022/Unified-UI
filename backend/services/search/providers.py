@@ -420,25 +420,39 @@ def duckduckgo_search(query: str, count: int = 10, time_filter: Optional[str] = 
             logger.warning(f"DuckDuckGo HTML search failed: {e}")
             return []
 
+    # `ddgs` is the maintained successor of `duckduckgo-search` (which is now
+    # blocked far more often); accept either so an older install keeps working.
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
+        ddgs_kwargs = {"backend": "duckduckgo"}
     except ImportError:
-        logger.warning("duckduckgo-search package not installed; using HTML fallback")
-        return _html_fallback()
+        try:
+            from duckduckgo_search import DDGS
+            ddgs_kwargs = {}
+        except ImportError:
+            logger.warning("ddgs package not installed; using HTML fallback")
+            return _html_fallback()
 
     timelimit = None
     if time_filter:
         time_map = {"day": "d", "week": "w", "month": "m", "year": "y"}
         timelimit = time_map.get(time_filter)
 
-    try:
-        ddgs = DDGS()
-        raw = ddgs.text(
-            query,
-            max_results=count,
-            timelimit=timelimit,
-            safesearch=_safesearch_for("duckduckgo_lib"),
-        )
+    # DuckDuckGo alone is often empty/blocked on quick repeats; ddgs's "auto"
+    # mode then spreads the query over several engines instead of giving up.
+    backends = [ddgs_kwargs, {"backend": "auto"}] if ddgs_kwargs else [{}]
+    for kwargs in backends:
+        try:
+            raw = DDGS().text(
+                query,
+                max_results=count,
+                timelimit=timelimit,
+                safesearch=_safesearch_for("duckduckgo_lib"),
+                **kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"DuckDuckGo search failed ({kwargs or 'default'}): {e}")
+            continue
         results = []
         for item in raw:
             url = item.get("href", "")
@@ -450,10 +464,9 @@ def duckduckgo_search(query: str, count: int = 10, time_filter: Optional[str] = 
                 "snippet": item.get("body", ""),
             })
         logger.info(f"DuckDuckGo search returned {len(results)} results")
-        return results or _html_fallback()
-    except Exception as e:
-        logger.warning(f"DuckDuckGo search failed: {e}")
-        return _html_fallback()
+        if results:
+            return results
+    return _html_fallback()
 
 
 # ── Google Programmable Search Engine ──

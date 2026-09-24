@@ -22,7 +22,7 @@ class GroqProvider(BaseProvider):
             "model": model,
             "messages": formatted,
             "temperature": temperature if temperature is not None else 0.7,
-            # Reasoning models (e.g. qwen/qwen3.6-27b) can spend most of a small
+            # Reasoning models (e.g. qwen/qwen3.8-27b) can spend most of a small
             # budget just "thinking" before writing any visible answer — a low
             # cap here means the response gets cut off mid-thought.
             "max_tokens": max_tokens or 8192,

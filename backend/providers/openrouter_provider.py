@@ -11,7 +11,7 @@ class OpenRouterProvider(BaseProvider):
         self, messages: list[dict], model: str, api_key: str,
         max_tokens: int | None = None, temperature: float | None = None,
     ) -> dict:
-        formatted = self.format_messages_with_turns(messages)
+        formatted = self.format_messages_with_image(messages)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -41,7 +41,7 @@ class OpenRouterProvider(BaseProvider):
         }
 
     async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):
-        formatted = self.format_messages_with_turns(messages)
+        formatted = self.format_messages_with_image(messages)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

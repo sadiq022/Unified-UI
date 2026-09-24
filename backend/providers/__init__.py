@@ -43,14 +43,16 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "gemini-3.1-flash-lite",
         "gemini-3.5-flash",
     ],
+    # Verified 2026-09-23 against Groq's live /v1/models: llama-3.3-70b-versatile,
+    # llama-3.1-8b-instant, gemma2-9b-it, qwen/qwen3-32b and the llama-4-scout
+    # vision model have all been retired from Groq's catalog since this list was
+    # first written (they now 404). qwen3.6-27b was renamed to qwen3.8-27b.
     "groq": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "gemma2-9b-it",
-        "qwen/qwen3-32b",
-        "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "openai/gpt-oss-safeguard-20b",
+        "allam-2-7b",
     ],
     "deepseek": [
         "deepseek-chat",
@@ -63,31 +65,68 @@ DEFAULT_MODELS: dict[str, list[str]] = {
         "meta-llama/llama-3.3-70b-instruct",
         "mistralai/mistral-large-latest",
     ],
+    # Verified 2026-09-23 against NVIDIA's live /v1/models: deepseek-v4-pro,
+    # mistral-large-3, mistral-small-4 and qwen3.5-397b have all been retired
+    # with no direct successor in the catalog (dropped rather than guessing a
+    # replacement). deepseek-v4-flash -> deepseek-v4.1-flash and glm-5.2 ->
+    # glm-5.3 were straight renames; mistral-large-3 replaced with the closest
+    # live model, mistral-large-2-instruct.
     "nvidia": [
-        "deepseek-ai/deepseek-v4-pro",
-        "deepseek-ai/deepseek-v4-flash",
-        "mistralai/mistral-large-3-675b-instruct-2512",
-        "mistralai/mistral-small-4-119b-2603",
-        "z-ai/glm-5.2",
-        "qwen/qwen3.5-397b-a17b",
+        "deepseek-ai/deepseek-v4.1-flash",
+        "mistralai/mistral-large-2-instruct",
+        "z-ai/glm-5.3",
         "nvidia/nemotron-3-super-120b-a12b",
+        # Vision-capable — added 2026-09-24 for Document OCR model choice.
+        "meta/llama-3.2-11b-vision-instruct",
+        "meta/llama-3.2-90b-vision-instruct",
     ],
+    # Verified 2026-09-23 against Cerebras's live /v1/models: gemma-4-31b and
+    # zai-glm-4.7 no longer exist there (Cerebras's whole hosted catalog is
+    # now just these two models).
     "cerebras": [
-        "gemma-4-31b",
-        "zai-glm-4.7",
         "gpt-oss-120b",
+        "qwen-3.8-27b",
     ],
     # No fixed model list — whatever's loaded on the user's local server gets
     # added as a custom model instead (its name is up to the user/server).
     "local": [],
 }
 
-# Models that accept image input. None of the other listed models support vision.
+# Models that accept image input. Every entry here was actually tested end to
+# end through this app's own provider code (sent a real image, got back a
+# correct reading of it) on 2026-09-24, except where noted — a model
+# "supporting vision" per its provider's docs is not the same as this app's
+# adapter code actually forwarding the image to it (see providers/*.py).
 VISION_MODELS: dict[str, list[str]] = {
+    # meta-llama/llama-4-scout was Groq's other vision model but has been
+    # retired (see DEFAULT_MODELS). qwen3.8-27b confirmed in an earlier session.
     "groq": [
-        "qwen/qwen3.6-27b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3.8-27b",
     ],
+    # Gemini's whole model family is natively multimodal; gemini-3.5-flash was
+    # directly tested, gemini-3.1-flash-lite is the same family (not retested).
+    "gemini": [
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+    ],
+    # openai/gpt-4o-mini directly tested via OpenRouter; gpt-4o (its more
+    # capable sibling), Claude Sonnet 4 and Gemini 2.5 Pro are well-established
+    # multimodal flagships from their own providers, not separately retested here.
+    "openrouter": [
+        "openai/gpt-4o",
+        "anthropic/claude-sonnet-4-20250514",
+        "google/gemini-2.5-pro-preview-05-06",
+    ],
+    # meta/llama-3.2-11b-vision-instruct directly tested; the 90b variant is
+    # the same model family at a larger size, not separately retested.
+    "nvidia": [
+        "meta/llama-3.2-11b-vision-instruct",
+        "meta/llama-3.2-90b-vision-instruct",
+    ],
+    # Cerebras: the app's code now sends images to it the same way as the
+    # other OpenAI-compatible providers, but this account got 402 Payment
+    # Required on every model tried — couldn't verify actual vision support,
+    # so nothing is listed here yet. Not a code gap, an unverified one.
 }
 
 # Approximate max context window (tokens) per model, used only to decide when to
@@ -111,13 +150,11 @@ CONTEXT_LENGTHS: dict[str, int] = {
     "gemini-3.1-flash-lite": 1_000_000,
     "gemini-3.5-flash": 1_000_000,
     # Groq
-    "llama-3.3-70b-versatile": 128_000,
-    "llama-3.1-8b-instant": 128_000,
-    "gemma2-9b-it": 8_192,
-    "qwen/qwen3-32b": 32_768,
-    "qwen/qwen3.6-27b": 32_768,
+    "qwen/qwen3.8-27b": 32_768,
+    "openai/gpt-oss-120b": 128_000,
     "openai/gpt-oss-20b": 128_000,
-    "meta-llama/llama-4-scout-17b-16e-instruct": 128_000,
+    "openai/gpt-oss-safeguard-20b": 128_000,
+    "allam-2-7b": 4_096,
     # DeepSeek
     "deepseek-chat": 64_000,
     "deepseek-reasoner": 64_000,
@@ -128,16 +165,13 @@ CONTEXT_LENGTHS: dict[str, int] = {
     "meta-llama/llama-3.3-70b-instruct": 128_000,
     "mistralai/mistral-large-latest": 128_000,
     # NVIDIA NIM
-    "deepseek-ai/deepseek-v4-pro": 128_000,
-    "deepseek-ai/deepseek-v4-flash": 128_000,
-    "mistralai/mistral-large-3-675b-instruct-2512": 128_000,
-    "mistralai/mistral-small-4-119b-2603": 128_000,
-    "z-ai/glm-5.2": 128_000,
-    "qwen/qwen3.5-397b-a17b": 128_000,
+    "deepseek-ai/deepseek-v4.1-flash": 128_000,
+    "mistralai/mistral-large-2-instruct": 128_000,
+    "z-ai/glm-5.3": 128_000,
     "nvidia/nemotron-3-super-120b-a12b": 128_000,
     # Cerebras
     "gemma-4-31b": 32_000,
-    "zai-glm-4.7": 128_000,
+    "qwen-3.8-27b": 32_768,
     "gpt-oss-120b": 128_000,
 }
 DEFAULT_CONTEXT_LENGTH = 32_000  # fallback for unlisted/custom models

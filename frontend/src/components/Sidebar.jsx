@@ -26,12 +26,45 @@ function groupByDate(conversations) {
   return groups;
 }
 
-export default function Sidebar({ conversations, activeId, onSelect, onCreate, onDelete, onOpenSettings, userEmail, onLogout }) {
+const COLLAPSED_KEY = 'unifiedui:sidebarCollapsed';
+
+export default function Sidebar({
+  conversations, activeId, onSelect, onCreate, onDelete, onOpenSettings, userEmail, onLogout,
+  view, onChangeView,
+}) {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null); // null = no active search
   const [searching, setSearching] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null); // { id, title } | null
+  // Persisted so it survives a reload, same as the theme preference — a
+  // deliberate "I want more room" choice shouldn't reset itself every visit.
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const debounceRef = useRef(null);
   const searchSeq = useRef(0);
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(COLLAPSED_KEY, String(next));
+      } catch {
+        // Private browsing / storage blocked — collapse still works for this session.
+      }
+      return next;
+    });
+  };
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    onDelete(pendingDelete.id);
+    setPendingDelete(null);
+  };
 
   // Debounced full-text search across conversation titles AND message content.
   useEffect(() => {
@@ -66,11 +99,23 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
   const groups = useMemo(() => groupByDate(filtered), [filtered]);
 
   return (
-    <div className="sidebar">
+    <div className={`sidebar${collapsed ? ' collapsed' : ''}`}>
+      <button
+        type="button"
+        className="sidebar-collapse-toggle"
+        onClick={toggleCollapsed}
+        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        id="sidebar-collapse-btn"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: collapsed ? 'rotate(180deg)' : 'none' }}>
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">U</div>
-          <h1>Unified UI</h1>
+          <h1 className="sidebar-label">Unified UI</h1>
         </div>
 
         <div className="sidebar-search">
@@ -93,14 +138,38 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
         </div>
       </div>
 
+      <div className="view-switch">
+        <button
+          type="button"
+          className={`view-switch-tab${view !== 'ocr' ? ' active' : ''}`}
+          onClick={() => onChangeView('chat')}
+        >
+          Chat
+        </button>
+        <button
+          type="button"
+          className={`view-switch-tab${view === 'ocr' ? ' active' : ''}`}
+          onClick={() => onChangeView('ocr')}
+          id="ocr-tab-btn"
+        >
+          Document OCR
+        </button>
+      </div>
+
+      {view === 'ocr' ? (
+        <div className="sidebar-conversations sidebar-ocr-note">
+          Reading scanned forms with your local vision model. Switch back to Chat to compare models.
+        </div>
+      ) : (
+      <>
       <div className="sidebar-nav">
-        <button className="sidebar-nav-item primary" onClick={onCreate} id="new-chat-btn">
+        <button className="sidebar-nav-item primary" onClick={onCreate} id="new-chat-btn" title="New Comparison">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="9" />
             <line x1="12" y1="8" x2="12" y2="16" />
             <line x1="8" y1="12" x2="16" y2="12" />
           </svg>
-          New Comparison
+          <span className="sidebar-label">New Comparison</span>
         </button>
       </div>
 
@@ -130,7 +199,7 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
                     className="conversation-item-delete"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDelete(conv.id);
+                      setPendingDelete({ id: conv.id, title: conv.title });
                     }}
                     title="Delete conversation"
                   >
@@ -142,25 +211,52 @@ export default function Sidebar({ conversations, activeId, onSelect, onCreate, o
           ))
         )}
       </div>
+      </>
+      )}
 
       <div className="sidebar-footer">
-        {userEmail && <div className="sidebar-user-email" title={userEmail}>{userEmail}</div>}
-        <button className="sidebar-nav-item" onClick={() => onOpenSettings('apikeys')} id="open-settings-btn">
+        {userEmail && <div className="sidebar-user-email sidebar-label" title={userEmail}>{userEmail}</div>}
+        <button className="sidebar-nav-item" onClick={() => onOpenSettings('apikeys')} id="open-settings-btn" title="Settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          Settings
+          <span className="sidebar-label">Settings</span>
         </button>
-        <button className="sidebar-nav-item" onClick={onLogout} id="logout-btn">
+        <button className="sidebar-nav-item" onClick={onLogout} id="logout-btn" title="Log out">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
-          Log out
+          <span className="sidebar-label">Log out</span>
         </button>
       </div>
+
+      {pendingDelete && (
+        <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
+          <div className="modal confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Delete conversation?</h2>
+              <button className="modal-close" onClick={() => setPendingDelete(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-dialog-text">
+                This will permanently delete <strong>&ldquo;{pendingDelete.title}&rdquo;</strong> and every
+                message in it. This can't be undone.
+              </p>
+              <div className="confirm-dialog-actions">
+                <button type="button" className="confirm-dialog-cancel" onClick={() => setPendingDelete(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="confirm-dialog-delete" onClick={confirmDelete}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

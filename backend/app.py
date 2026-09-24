@@ -5,7 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
-from backend.routes import api_keys, conversations, chat, custom_models, auth, panel_presets, files, memories, search
+from backend.current_date import request_timezone
+from backend.routes import api_keys, conversations, chat, custom_models, auth, panel_presets, files, memories, search, ocr
 
 # Path to the built React frontend
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
@@ -34,6 +35,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def capture_timezone(request, call_next):
+    request_timezone.set(request.headers.get("x-timezone"))
+    return await call_next(request)
+
+
 # Register API routes
 app.include_router(auth.router)
 app.include_router(api_keys.router)
@@ -44,6 +51,7 @@ app.include_router(panel_presets.router)
 app.include_router(files.router)
 app.include_router(memories.router)
 app.include_router(search.router)
+app.include_router(ocr.router)
 
 # Serve React static files if the build exists
 if os.path.isdir(FRONTEND_DIST):

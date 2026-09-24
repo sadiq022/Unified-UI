@@ -139,3 +139,84 @@ class PanelPreset(Base):
     name = Column(String(100), nullable=False)
     config = Column(Text, nullable=False)  # JSON: [{provider, model}, ...]
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ── Document OCR (scanned form extraction) ──────────────────────────────────
+# See scanned_form_extraction.md for the pipeline this implements. Phase 1:
+# a vision-language model (no separate OCR engine) reads each whole page and
+# returns the doc's field schema directly; per-checkbox crops, a dedicated
+# checkbox geometry/state detector, and multi-variant preprocessing comparison
+# are later phases (see document-ocr-implementation-plan.md).
+
+class OcrDocument(Base):
+    __tablename__ = "ocr_documents"
+    # Without this, SQLite reuses a deleted row's id for the next insert once
+    # the table is empty — which let a new document collide with an orphaned
+    # ocr_pages row still pointing at that reused id (see the 2026-09-23
+    # UNIQUE-constraint incident). Same reasoning as Conversation's id.
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    provider = Column(String(50), nullable=False)  # which model read this document, e.g. "local"
+    model = Column(String(200), nullable=False)
+    page_count = Column(Integer, default=0, nullable=False)
+    # queued | processing | done | failed
+    status = Column(String(20), default="queued", nullable=False)
+    error = Column(Text, nullable=True)
+    # Wall-clock time for the whole document, start to finish — with pages
+    # read concurrently (see MAX_CONCURRENT_PAGES), this is NOT the sum of the
+    # pages' own processing_seconds, it's how long the upload actually took.
+    processing_seconds = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    pages = relationship("OcrPage", back_populates="document", cascade="all, delete-orphan",
+                          order_by="OcrPage.page_number")
+
+
+class OcrPage(Base):
+    __tablename__ = "ocr_pages"
+    __table_args__ = (UniqueConstraint("document_id", "page_number", name="uq_ocrpage_doc_number"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(Integer, ForeignKey("ocr_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number = Column(Integer, nullable=False)
+    image_path = Column(Text, nullable=False)  # rendered PNG on disk, relative to data/
+    width = Column(Integer, nullable=False)
+    height = Column(Integer, nullable=False)
+    # queued | processing | done | failed
+    status = Column(String(20), default="queued", nullable=False)
+    error = Column(Text, nullable=True)
+    # How long THIS page's own model call(s) took — since pages run
+    # concurrently, this is the number worth comparing across pages/models,
+    # not the document's total (which reflects the whole batch, not one page).
+    processing_seconds = Column(Float, nullable=True)
+
+    document = relationship("OcrDocument", back_populates="pages")
+    fields = relationship("OcrField", back_populates="page", cascade="all, delete-orphan")
+
+
+class OcrField(Base):
+    """One extracted field — matches scanned_form_extraction.md's suggested
+    JSON output. bbox_page is null in Phase 1 (a whole-page VLM call has no
+    real geometry to report); Phase 2's crop-based pipeline fills it in."""
+    __tablename__ = "ocr_fields"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    page_id = Column(Integer, ForeignKey("ocr_pages.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_id = Column(String(100), nullable=False)  # the model's own field identifier within the page
+    question = Column(Text, nullable=True)
+    row_label = Column(Text, nullable=True)
+    column_label = Column(Text, nullable=True)
+    option_label = Column(Text, nullable=True)
+    text_value = Column(Text, nullable=True)
+    checkbox_state = Column(String(20), nullable=True)  # checked | unchecked | ambiguous | null
+    confidence = Column(Float, nullable=True)  # the model's own self-reported confidence, 0-1 — see note in schema.py
+    bbox_page = Column(Text, nullable=True)  # JSON [x0,y0,x1,y1] in page pixel space, or null
+    crop_id = Column(String(100), nullable=True)
+    needs_review = Column(Boolean, default=False, nullable=False)
+    reviewed = Column(Boolean, default=False, nullable=False)  # a human has confirmed/corrected this field
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    page = relationship("OcrPage", back_populates="fields")

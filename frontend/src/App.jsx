@@ -5,6 +5,7 @@ import SettingsModal from './components/SettingsModal.jsx';
 import SourcePanel from './components/SourcePanel.jsx';
 import Auth from './components/Auth.jsx';
 import PresetsMenu from './components/PresetsMenu.jsx';
+import DocumentOcrTab from './components/DocumentOcrTab.jsx';
 import { PROVIDERS } from './constants.js';
 import {
   getConversations,
@@ -100,6 +101,7 @@ export default function App() {
   const [panelErrors, setPanelErrors] = useState({});
   const [retryingKey, setRetryingKey] = useState(null); // "provider:model:turnNumber"
   const [showSettings, setShowSettings] = useState(false);
+  const [view, setView] = useState('chat'); // 'chat' | 'ocr'
   const [settingsTab, setSettingsTab] = useState('account');
   const [configuredProviders, setConfiguredProviders] = useState([]);
   const [modelsByProvider, setModelsByProvider] = useState({});
@@ -107,6 +109,7 @@ export default function App() {
   const [presets, setPresets] = useState([]);
   const [attachedImage, setAttachedImage] = useState(null); // { dataUrl, name }
   const [attachedFile, setAttachedFile] = useState(null); // { name, content, truncated }
+  const [webSearch, setWebSearch] = useState(false); // stays on across messages until switched off
   const [withSources, setWithSources] = useState(false); // "generate with sources" toggle, only meaningful with a file attached
   const [extractingFile, setExtractingFile] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -621,7 +624,7 @@ export default function App() {
           loadConversations();
           refreshCompactions(convId);
         }
-      }, withSourcesToSend);
+      }, withSourcesToSend, webSearch);
     } catch (err) {
       console.error('Send failed:', err);
       setPanelErrors({ global: err.message });
@@ -706,7 +709,8 @@ export default function App() {
       const targets = activePanels.map((p) => ({ provider: p.provider, model: p.model, panel_id: p.panel_id }));
       const result = await editMessage(
         activeConvId, message.id, newContent, targets,
-        message.image || null, message.attached_file_name || null, message.attached_file_content || null
+        message.image || null, message.attached_file_name || null, message.attached_file_content || null,
+        webSearch
       );
 
       const newMessages = [result.user_message];
@@ -862,8 +866,13 @@ export default function App() {
         onOpenSettings={(tab) => { setSettingsTab(tab || 'account'); setShowSettings(true); }}
         userEmail={currentUser.email}
         onLogout={handleLogout}
+        view={view}
+        onChangeView={setView}
       />
 
+      {view === 'ocr' ? (
+        <DocumentOcrTab />
+      ) : (
       <div className="main-content">
         {/* Panel controls */}
         <div className="panel-controls">
@@ -1025,6 +1034,24 @@ export default function App() {
               </svg>
             </button>
 
+            <button
+              type="button"
+              className={`web-search-btn${webSearch ? ' active' : ''}`}
+              onClick={() => setWebSearch((v) => !v)}
+              title={webSearch
+                ? 'Web search is ON — each message is answered using live results from DuckDuckGo. Click to turn off.'
+                : 'Turn on web search — answer using live results from the web'}
+              aria-pressed={webSearch}
+              id="web-search-btn"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+              Web
+            </button>
+
             {attachedImage && (
               <div className="attached-image-chip">
                 <img src={attachedImage.dataUrl} alt={attachedImage.name} />
@@ -1090,6 +1117,7 @@ export default function App() {
           </div>
         </div>
       </div>
+      )}
 
       <SettingsModal
         isOpen={showSettings}

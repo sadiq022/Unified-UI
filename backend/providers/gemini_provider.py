@@ -12,37 +12,7 @@ class GeminiProvider(BaseProvider):
         self, messages: list[dict], model: str, api_key: str,
         max_tokens: int | None = None, temperature: float | None = None,
     ) -> dict:
-        formatted = self.format_messages_with_turns(messages)
-
-        # Convert OpenAI-style messages to Gemini format
-        # Gemini uses "user" and "model" roles, and "parts" array
-        system_instruction = ""
-        contents = []
-
-        for msg in formatted:
-            role = msg["role"]
-            if role == "system":
-                system_instruction += msg["content"] + "\n"
-                continue
-
-            # Map roles: "assistant" -> "model"
-            gemini_role = "model" if role == "assistant" else "user"
-            contents.append({
-                "role": gemini_role,
-                "parts": [{"text": msg["content"]}],
-            })
-
-        # Ensure conversation starts with a user message
-        if contents and contents[0]["role"] != "user":
-            contents.insert(0, {"role": "user", "parts": [{"text": "Hello"}]})
-
-        # Merge consecutive same-role messages (Gemini requires alternating)
-        merged = []
-        for item in contents:
-            if merged and merged[-1]["role"] == item["role"]:
-                merged[-1]["parts"].extend(item["parts"])
-            else:
-                merged.append(item)
+        merged, system_instruction = self._build_contents(messages)
 
         url = f"{self.BASE_URL}/{model}:generateContent"
 
@@ -58,9 +28,9 @@ class GeminiProvider(BaseProvider):
             },
         }
 
-        if system_instruction.strip():
+        if system_instruction:
             payload["systemInstruction"] = {
-                "parts": [{"text": system_instruction.strip()}]
+                "parts": [{"text": system_instruction}]
             }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -90,7 +60,17 @@ class GeminiProvider(BaseProvider):
         }
 
     def _build_contents(self, messages: list[dict]) -> tuple[list[dict], str]:
+        """Converts OpenAI-shaped {"role","content"} messages (plus an optional
+        "image" data URL on the current turn) into Gemini's contents/parts
+        shape. Gemini's image format (inline_data: {mime_type, data}) is
+        unrelated to the OpenAI-style image_url convention the other
+        providers share via BaseProvider.format_messages_with_image, so this
+        is handled separately here rather than reusing that helper."""
         formatted = self.format_messages_with_turns(messages)
+        image = next(
+            (msg["image"] for msg in reversed(messages) if msg.get("role") == "user" and msg.get("image")),
+            None,
+        )
         system_instruction = ""
         contents = []
         for msg in formatted:
@@ -110,6 +90,12 @@ class GeminiProvider(BaseProvider):
                 merged[-1]["parts"].extend(item["parts"])
             else:
                 merged.append(item)
+
+        if image and merged and merged[-1]["role"] == "user":
+            header, _, b64_data = image.partition(",")
+            mime_type = header.split(":")[1].split(";")[0] if header.startswith("data:") else "image/png"
+            merged[-1]["parts"].append({"inline_data": {"mime_type": mime_type, "data": b64_data}})
+
         return merged, system_instruction.strip()
 
     async def chat_stream(self, messages: list[dict], model: str, api_key: str, usage_sink: dict | None = None):

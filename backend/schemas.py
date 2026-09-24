@@ -184,6 +184,66 @@ class EditMessageRequest(BaseModel):
     image: Optional[str] = None
     attached_file_name: Optional[str] = None
     attached_file_content: Optional[str] = None
+    web_search: bool = False
+
+
+# ── Document OCR ──────────────────────────────────────────────────────────────
+
+class OcrFieldResponse(BaseModel):
+    id: int
+    field_id: str
+    question: Optional[str] = None
+    row_label: Optional[str] = None
+    column_label: Optional[str] = None
+    option_label: Optional[str] = None
+    text_value: Optional[str] = None
+    checkbox_state: Optional[str] = None
+    confidence: Optional[float] = None
+    bbox_page: Optional[str] = None
+    crop_id: Optional[str] = None
+    needs_review: bool
+    reviewed: bool
+
+    class Config:
+        from_attributes = True
+
+
+class OcrPageResponse(BaseModel):
+    id: int
+    page_number: int
+    width: int
+    height: int
+    status: str
+    error: Optional[str] = None
+    processing_seconds: Optional[float] = None
+    fields: list[OcrFieldResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class OcrDocumentResponse(BaseModel):
+    id: int
+    filename: str
+    provider: str
+    model: str
+    page_count: int
+    status: str
+    error: Optional[str] = None
+    processing_seconds: Optional[float] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OcrDocumentDetailResponse(OcrDocumentResponse):
+    pages: list[OcrPageResponse] = []
+
+
+class OcrFieldCorrection(BaseModel):
+    text_value: Optional[str] = None
+    checkbox_state: Optional[str] = None
 
 
 # ── Context Compaction ───────────────────────────────────────────────────────────

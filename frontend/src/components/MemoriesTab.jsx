@@ -17,6 +17,7 @@ export default function MemoriesTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null); // memory | null
 
   useEffect(() => {
     loadMemories();
@@ -49,6 +50,7 @@ export default function MemoriesTab() {
   };
 
   const handleDelete = async (memory) => {
+    setPendingDelete(null);
     setBusyId(memory.id);
     try {
       await deleteMemory(memory.id);
@@ -98,7 +100,7 @@ export default function MemoriesTab() {
                 <button
                   type="button"
                   className="memory-delete-btn"
-                  onClick={() => handleDelete(m)}
+                  onClick={() => setPendingDelete(m)}
                   disabled={busyId === m.id}
                   title="Forget this"
                 >
@@ -107,6 +109,37 @@ export default function MemoriesTab() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPendingDelete(null);
+          }}
+        >
+          <div className="modal confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Forget this memory?</h2>
+              <button className="modal-close" onClick={() => setPendingDelete(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-dialog-text">
+                This will permanently delete <strong>&ldquo;{pendingDelete.text}&rdquo;</strong>. The
+                assistant will no longer remember it. This can't be undone.
+              </p>
+              <div className="confirm-dialog-actions">
+                <button type="button" className="confirm-dialog-cancel" onClick={() => setPendingDelete(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="confirm-dialog-delete" onClick={() => handleDelete(pendingDelete)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

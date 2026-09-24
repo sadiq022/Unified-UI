@@ -20,12 +20,12 @@ from backend.memory_injection import build_memory_preface
 from backend.memory_pipeline import extract_and_store
 from backend.mom_prompts import MOM_SYSTEM_PROMPT
 from backend.transcript_sourcing import build_indexed_transcript, build_mom_user_content, parse_and_validate_mom
+from backend.web_search_context import build_web_search_preface
+from backend.text_cleanup import strip_think_blocks as _strip_think_blocks
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
 
 _TURN_PREFIX_RE = re.compile(r"^\s*\[Turn \d+\]\s*", re.IGNORECASE)
-_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
-_UNCLOSED_THINK_RE = re.compile(r"<think>(.*)", re.IGNORECASE | re.DOTALL)
 
 # Final catch-all: whatever the exact reason (reasoning cut off with no real
 # answer following it, a content filter, something we haven't seen yet), an
@@ -54,23 +54,6 @@ _MOM_NO_STRUCTURED_OUTPUT_NOTE = (
 def _strip_turn_prefix(content: str) -> str:
     """Strip a leaked '[Turn N] ' marker some models echo back from the prompt."""
     return _TURN_PREFIX_RE.sub("", content, count=1)
-
-
-def _strip_think_blocks(content: str) -> str:
-    """
-    Remove <think>...</think> reasoning traces some models (Qwen, DeepSeek-R1
-    style, etc.) inline into their content. Reasoning is never shown in the
-    chat, closed or not — a <think> tag left unclosed (the model ran out of
-    response length mid-thought) just means everything from that point on is
-    discarded, keeping only whatever real content came before it, if any. If
-    that leaves nothing, the caller's empty-response check shows a short,
-    clean note instead — never the raw reasoning text.
-    """
-    stripped = _THINK_BLOCK_RE.sub("", content)
-    match = _UNCLOSED_THINK_RE.search(stripped)
-    if match:
-        stripped = stripped[:match.start()]
-    return stripped.strip()
 
 
 def _friendly_error(raw: str) -> str:
@@ -255,7 +238,7 @@ async def _vision_unsupported_response(provider_name: str, model: str, panel_id:
         response_time_ms=0.0,
         error=(
             "This model doesn't support image input. Use a vision-capable model "
-            "(e.g. Groq's qwen/qwen3.6-27b or meta-llama/llama-4-scout-17b-16e-instruct)."
+            "(e.g. Groq's qwen/qwen3.8-27b)."
         ),
     )
 
@@ -343,13 +326,13 @@ async def send_message(
                 )
             api_keys[target.provider] = key_obj.api_key
 
-    # Extraction runs once per turn (not once per panel/model) using whichever
-    # model answers first — a background task, so it never adds latency to the
-    # actual chat response and a failure there can never affect it.
-    first_target = req.targets[0]
+    # Extraction runs once per turn (not once per panel/model) — a background
+    # task, so it never adds latency to the actual chat response and a failure
+    # there can never affect it. Gets every active model in panel order: the
+    # first is tried, the second is only a backup if the first errors.
     background_tasks.add_task(
         extract_and_store, req.conversation_id, current_user.id,
-        first_target.provider, first_target.model, api_keys[first_target.provider],
+        [(t.provider, t.model, api_keys[t.provider]) for t in req.targets],
     )
 
     # Same facts (pinned + relevant-to-this-message) get injected into every
@@ -357,7 +340,9 @@ async def send_message(
     memory_preface, injected_memories = await build_memory_preface(db, current_user.id, req.message)
     for mem in injected_memories:
         mem.uses += 1
-    system_preface = memory_preface + mom_preface
+    # Web search runs once per message, shared by every panel.
+    web_preface = await build_web_search_preface(req.message) if req.web_search else []
+    system_preface = memory_preface + web_preface + mom_preface
 
     # Call all models concurrently, each with its own (possibly compacted) context.
     # A target that can't handle the attached image gets a friendly error instead of a wasted API call.
@@ -625,13 +610,13 @@ async def send_message_stream(
                 )
             api_keys[target.provider] = key_obj.api_key
 
-    # Extraction runs once per turn (not once per panel/model) using whichever
-    # model answers first — a background task, so it never adds latency to the
-    # actual chat response and a failure there can never affect it.
-    first_target = req.targets[0]
+    # Extraction runs once per turn (not once per panel/model) — a background
+    # task, so it never adds latency to the actual chat response and a failure
+    # there can never affect it. Gets every active model in panel order: the
+    # first is tried, the second is only a backup if the first errors.
     background_tasks.add_task(
         extract_and_store, req.conversation_id, current_user.id,
-        first_target.provider, first_target.model, api_keys[first_target.provider],
+        [(t.provider, t.model, api_keys[t.provider]) for t in req.targets],
     )
 
     # Same facts (pinned + relevant-to-this-message) get injected into every
@@ -640,7 +625,9 @@ async def send_message_stream(
     memory_preface, injected_memories = await build_memory_preface(db, current_user.id, req.message)
     for mem in injected_memories:
         mem.uses += 1
-    system_preface = memory_preface + mom_preface
+    # Web search runs once per message, shared by every panel.
+    web_preface = await build_web_search_preface(req.message) if req.web_search else []
+    system_preface = memory_preface + web_preface + mom_preface
 
     # Everything the generator needs, captured as plain data — the `db` session
     # injected above is torn down once this function returns, before the
@@ -684,7 +671,7 @@ async def send_message_stream(
                     "type": "error",
                     "error": (
                         "This model doesn't support image input. Use a vision-capable model "
-                        "(e.g. Groq's qwen/qwen3.6-27b or meta-llama/llama-4-scout-17b-16e-instruct)."
+                        "(e.g. Groq's qwen/qwen3.8-27b)."
                     ),
                     "response_time_ms": 0.0,
                 })
@@ -930,21 +917,21 @@ async def edit_message(
             api_keys[target.provider] = key_obj.api_key
 
     # An edit is a new statement from the user, same as a fresh /send — extract
-    # from it too.
-    first_target = req.targets[0]
+    # from it too (first active model, second as backup).
     background_tasks.add_task(
         extract_and_store, req.conversation_id, current_user.id,
-        first_target.provider, first_target.model, api_keys[first_target.provider],
+        [(t.provider, t.model, api_keys[t.provider]) for t in req.targets],
     )
 
     memory_preface, injected_memories = await build_memory_preface(db, current_user.id, req.content)
     for mem in injected_memories:
         mem.uses += 1
+    web_preface = await build_web_search_preface(req.content) if req.web_search else []
 
     contexts = {
         target.provider + "|" + target.model: await _build_context_for_target(
             db, req.conversation_id, all_messages, target.provider, target.model, api_keys[target.provider],
-            memory_preface,
+            memory_preface + web_preface,
         )
         for target in req.targets
     }
